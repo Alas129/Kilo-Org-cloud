@@ -13,7 +13,8 @@ Pod::Spec.new do |s|
   s.dependency 'ExpoModulesCore'
 
   # SDK 26.4 supplies transcript token counting. SDK 27 additionally supplies
-  # reported usage and the new error types; do not make those a build requirement.
+  # reported usage, the new error types, the vision capability, and image
+  # attachments; do not make those a build requirement.
   # A toolchain without the FoundationModels API still builds the app: the pod
   # compiles an empty stub instead, the module never registers, and the JS layer
   # reports the model as unavailable on that machine.
