@@ -2831,7 +2831,7 @@
     "purchaseUnavailable": "ਇਸ ਵੇਲੇ Kilo Pass ਖਰੀਦਿਆ ਨਹੀਂ ਜਾ ਸਕਦਾ।",
     "kiloPassManagement": "Kilo Pass ਦਾ ਪ੍ਰਬੰਧ",
     "kiloPassSetup": "Kilo Pass ਦਾ ਸੈੱਟਅੱਪ",
-    "subscriptionHeaderDescription": "ਇੱਕ ਮਾਸਿਕ ਗਾਹਕੀ ਜੋ Kilo ਐਪ ਵਿੱਚ AI ਕੋਡਿੰਗ ਸੈਸ਼ਨ ਚਲਾਉਣ ਲਈ।",
+    "subscriptionHeaderDescription": "ਇੱਕ ਮਹੀਨਾਵਾਰ ਗਾਹਕੀ ਜੋ Kilo App ਵਿੱਚ AI ਕੋਡਿੰਗ ਸੈਸ਼ਨ ਚਲਾਉਣ ਲਈ ਤੁਹਾਡੇ Kilo ਬੈਲੰਸ ਵਿੱਚ ਕ੍ਰੈਡਿਟ ਜੋੜਦੀ ਹੈ।",
     "manage": "ਪ੍ਰਬੰਧ ਕਰੋ",
     "managedOnWeb": "ਇਹ Kilo Pass ਵੈੱਬ 'ਤੇ ਪ੍ਰਬੰਧਿਤ ਹੈ",
     "opensManagementOnWeb": "ਵੈੱਬ 'ਤੇ Kilo Pass ਦੇ ਪ੍ਰਬੰਧਨ ਦਾ ਪੰਨਾ ਖੋਲ੍ਹਦਾ ਹੈ।",
@@ -3129,14 +3129,6 @@
     "revokeImageMessage": "ਇਸ ਹੋਸਟ ਦੇ ਚਿੱਤਰ ਦੁਬਾਰਾ ਪੁਸ਼ਟੀ ਮੰਗਣਗੇ।",
     "backToPreferences": "ਤਰਜੀਹਾਂ 'ਤੇ ਵਾਪਸ ਜਾਓ"
   },
-  "quickChat": {
-    "empty": {
-      "title": "ਚੈਟ ਸ਼ੁਰੂ ਕਰੋ",
-      "description": "ਕਿਸੇ ਮਾਡਲ ਨਾਲ ਗੱਲ ਕਰਨ ਲਈ ਸੁਨੇਹਾ ਭੇਜੋ।"
-    },
-    "historyRetry": "ਚੈਟ ਦਾ ਇਤਿਹਾਸ ਲੋਡ ਨਹੀਂ ਹੋ ਸਕਿਆ।",
-    "sendError": "ਸੁਨੇਹਾ ਭੇਜਿਆ ਨਹੀਂ ਜਾ ਸਕਿਆ। ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।"
-  },
   "glanceable": {
     "waiting": "ਏਜੰਟਾਂ ਦੀ ਜਾਣਕਾਰੀ ਅੱਪਡੇਟ ਹੋ ਰਹੀ ਹੈ",
     "empty": "ਕੋਈ ਕੰਮ ਜਾਰੀ ਨਹੀਂ",
@@ -3182,6 +3174,36 @@
     "remoteOptionBody": "ਆਪਣੀ ਮਸ਼ੀਨ ਉੱਤੇ `kilo remote` CLI ਰਾਹੀਂ Kilo ਚਲਾਓ।",
     "skip": "ਟੂਰ ਛੱਡੋ",
     "tutorialLabel": "ਟਿਊਟੋਰੀਅਲ"
+  },
+  "modelChat": {
+    "empty": {
+      "title": "ਚੈਟ ਸ਼ੁਰੂ ਕਰੋ",
+      "description": "ਕਿਸੇ ਮਾਡਲ ਨਾਲ ਗੱਲ ਕਰਨ ਲਈ ਸੁਨੇਹਾ ਭੇਜੋ।"
+    },
+    "list": {
+      "loadFailed": "ਚੈਟ ਇਤਿਹਾਸ ਲੋਡ ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਿਆ।",
+      "new": "ਨਵੀਂ ਚੈਟ",
+      "openHint": "ਚੈਟ ਖੋਲ੍ਹਦਾ ਹੈ। ਮਿਟਾਉਣ ਲਈ ਲੰਮਾ ਦਬਾਓ।",
+      "deleteTitle": "ਇਹ ਚੈਟ ਮਿਟਾਉਣੀ ਹੈ?"
+    },
+    "beta": "ਬੀਟਾ",
+    "mcp": {
+      "title": "Kilo ਟੂਲ",
+      "use": "Kilo ਟੂਲ ਵਰਤੋ",
+      "useDescription": "ਇਸ ਚੈਟ ਨੂੰ Kilo ਸਰਵਰ ਵੱਲੋਂ ਦਿੱਤੇ ਟੂਲ ਵਰਤਣ ਦਿਓ।",
+      "off": "Kilo ਟੂਲ ਬੰਦ ਹਨ",
+      "offDescription": "ਇਹ ਚੈਟ ਮਾਡਲ ਨੂੰ ਕੋਈ ਵੀ Kilo ਟੂਲ ਨਹੀਂ ਭੇਜਦੀ।",
+      "connecting": "Kilo ਟੂਲ ਨਾਲ ਜੁੜ ਰਿਹਾ ਹੈ…",
+      "available": "ਉਪਲਬਧ ਟੂਲ: {{count}}",
+      "none": "ਕੋਈ ਟੂਲ ਉਪਲਬਧ ਨਹੀਂ",
+      "noneDescription": "Kilo ਸਰਵਰ ਨੇ ਕੋਈ ਟੂਲ ਵਾਪਸ ਨਹੀਂ ਕੀਤਾ।",
+      "unreachable": "Kilo ਟੂਲ ਤੱਕ ਨਹੀਂ ਪਹੁੰਚ ਸਕਿਆ",
+      "unreachableDescription": "ਸਰਵਰ ਨੇ ਜਵਾਬ ਨਹੀਂ ਦਿੱਤਾ। ਆਪਣਾ ਕਨੈਕਸ਼ਨ ਜਾਂਚੋ, ਫਿਰ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।",
+      "unauthorized": "Kilo ਟੂਲ ਨੇ ਇਸ ਸੈਸ਼ਨ ਨੂੰ ਅਸਵੀਕਾਰ ਕੀਤਾ",
+      "unauthorizedDescription": "ਇਸ ਚੈਟ ਵਿੱਚ Kilo ਟੂਲ ਵਰਤਣ ਲਈ ਦੁਬਾਰਾ ਸਾਈਨ ਇਨ ਕਰੋ।",
+      "unavailable": "Kilo ਟੂਲ ਉਪਲਬਧ ਨਹੀਂ",
+      "unavailableDescription": "ਇਸ ਖਾਤੇ ਲਈ Kilo ਸਰਵਰ ਨਹੀਂ ਹੈ।"
+    }
   },
   "appActions": {
     "start": {

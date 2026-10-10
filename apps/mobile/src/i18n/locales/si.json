@@ -2831,7 +2831,7 @@
     "purchaseUnavailable": "දැනට Kilo Pass මිලදී ගත නොහැක.",
     "kiloPassManagement": "Kilo Pass කළමනාකරණය",
     "kiloPassSetup": "Kilo Pass සැකසුම",
-    "subscriptionHeaderDescription": "Kilo App හි AI කේතීකරණ සැසි ක්‍රියාත්මක කිරීම සඳහා.",
+    "subscriptionHeaderDescription": "Kilo App තුළ AI කේතීකරණ සැසි පවත්වාගෙන යාම සඳහා ඔබේ Kilo ශේෂයට ක්‍රෙඩිට් එක් කරන මාසික දායකත්වයකි.",
     "manage": "කළමනාකරණය කරන්න",
     "managedOnWeb": "මෙම Kilo Pass වෙබ් අඩවියෙන් කළමනාකරණය කරයි",
     "opensManagementOnWeb": "වෙබ් අඩවියේ Kilo Pass කළමනාකරණ පිටුව විවෘත කරයි.",
@@ -3129,14 +3129,6 @@
     "revokeImageMessage": "මෙම ධාරකයේ රූප නැවත තහවුරු කිරීම ඉල්ලා සිටී.",
     "backToPreferences": "මනාප වෙත ආපසු යන්න"
   },
-  "quickChat": {
-    "empty": {
-      "title": "කතාබසක් ආරම්භ කරන්න",
-      "description": "ආකෘතියක් සමඟ කතා කිරීමට පණිවිඩයක් යවන්න."
-    },
-    "historyRetry": "කතාබස් ඉතිහාසය පූරණය කළ නොහැකි විය.",
-    "sendError": "පණිවිඩය යැවිය නොහැකි විය. නැවත උත්සාහ කරන්න."
-  },
   "glanceable": {
     "waiting": "නියෝජිතයන් යාවත්කාලීන කරමින්",
     "empty": "සිදු කෙරෙන වැඩ කිසිවක් නැත",
@@ -3182,6 +3174,36 @@
     "remoteOptionBody": "ඔබේම යන්ත්‍රයේ `kilo remote` CLI මගින් Kilo ධාවනය කරන්න.",
     "skip": "සංචාරය මඟහරින්න",
     "tutorialLabel": "ඉගෙනුම් මාර්ගෝපදේශය"
+  },
+  "modelChat": {
+    "empty": {
+      "title": "කතාවක් ආරම්භ කරන්න",
+      "description": "ආකෘතියක් සමඟ කතා කිරීමට පණිවිඩයක් යවන්න."
+    },
+    "list": {
+      "loadFailed": "සංවාද ඉතිහාසය පූරණය කළ නොහැකි විය.",
+      "new": "නව කතාබහ",
+      "openHint": "කතාබහ විවෘත කරයි. මකා දැමීමට දිගු ලෙස ඔබන්න.",
+      "deleteTitle": "මෙම කතාබහ මකන්නද?"
+    },
+    "beta": "බීටා",
+    "mcp": {
+      "title": "Kilo මෙවලම්",
+      "use": "Kilo මෙවලම් භාවිත කරන්න",
+      "useDescription": "Kilo සේවාදායකය ලබා දෙන මෙවලම් මෙම කතාබහට භාවිත කිරීමට ඉඩ දෙන්න.",
+      "off": "Kilo මෙවලම් ක්‍රියා විරහිතයි",
+      "offDescription": "මෙම කතාබහ මොඩලයට කිසිදු Kilo මෙවලමක් යවන්නේ නැත.",
+      "connecting": "Kilo මෙවලම් වෙත සම්බන්ධ වෙමින්…",
+      "available": "ලබා ගත හැකි මෙවලම්: {{count}}",
+      "none": "මෙවලම් නොමැත",
+      "noneDescription": "Kilo සේවාදායකය කිසිදු මෙවලමක් ආපසු ලබා දුන්නේ නැත.",
+      "unreachable": "Kilo මෙවලම් වෙත ළඟා විය නොහැකි විය",
+      "unreachableDescription": "සේවාදායකය පිළිතුරු දුන්නේ නැත. ඔබේ සම්බන්ධතාවය පරීක්ෂා කර නැවත උත්සාහ කරන්න.",
+      "unauthorized": "Kilo මෙවලම් මෙම සැසිය ප්‍රතික්ෂේප කළේය",
+      "unauthorizedDescription": "මෙම කතාබහේ Kilo මෙවලම් භාවිත කිරීමට නැවත පිවිසෙන්න.",
+      "unavailable": "Kilo මෙවලම් නොමැත",
+      "unavailableDescription": "මෙම ගිණුම සඳහා Kilo සේවාදායකය නොමැත."
+    }
   },
   "appActions": {
     "start": {

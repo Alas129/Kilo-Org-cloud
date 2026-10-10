@@ -2831,7 +2831,7 @@
     "purchaseUnavailable": "አሁን Kilo Passን መግዛት አይቻልም።",
     "kiloPassManagement": "የKilo Pass አስተዳደር",
     "kiloPassSetup": "የKilo Pass ማዋቀር",
-    "subscriptionHeaderDescription": "ወርሃዊ ምዝገባ በKilo App ውስጥ የAI ኮዲንግ ክፍለ-ጊዜዎችን ለማስኬድ ወደ Kilo ቀሪ ሂሳብዎ ክሬዲት የሚያክል.",
+    "subscriptionHeaderDescription": "ወርሃዊ ምዝገባ በKilo App ውስጥ የAI ኮዲንግ ክፍለ-ጊዜዎችን ለማስኬድ ወደ Kilo ቀሪ ሂሳብዎ ክሬዲት የሚያክል።",
     "manage": "ያስተዳድሩ",
     "managedOnWeb": "ይህ Kilo Pass በድር ላይ የሚተዳደር ነው",
     "opensManagementOnWeb": "የKilo Pass አስተዳደርን በድር ላይ ይከፍታል።",
@@ -3129,14 +3129,6 @@
     "revokeImageMessage": "ከዚህ አስተናጋጅ የሚመጡ ምስሎች እንደገና ማረጋገጫ ይጠይባሉ።",
     "backToPreferences": "ወደ ምርጫዎች ይመለሱ"
   },
-  "quickChat": {
-    "empty": {
-      "title": "ውይይት ይጀምሩ",
-      "description": "ከሞዴል ጋር ለመወያየት መልዕክት ይላኩ።"
-    },
-    "historyRetry": "የውይይት ታሪኩን መጫን አልተቻለም።",
-    "sendError": "መልዕክቱን መላክ አልተቻለም። እንደገና ይሞክሩ።"
-  },
   "glanceable": {
     "waiting": "ወኪሎችን በማዘመን ላይ",
     "empty": "በሂደት ላይ ያለ ስራ የለም",
@@ -3182,6 +3174,36 @@
     "remoteOptionBody": "`kilo remote` በሚባለው CLI በመጠቀም Kiloን በራስዎ ማሽን ላይ ያስኪዱ።",
     "skip": "ጉዞውን ዕለጥ",
     "tutorialLabel": "መመሪያ"
+  },
+  "modelChat": {
+    "empty": {
+      "title": "ውይይት ጀምር",
+      "description": "ከሞዴል ጋር ለመወያየት መልእክት ይላኩ።"
+    },
+    "list": {
+      "loadFailed": "የውይይት ታሪክ መጫን አልተቻለም።",
+      "new": "አዲስ ውይይት",
+      "openHint": "ውይይቱን ይከፍታል። ለመሰረዝ ተጭነው ይያዙ።",
+      "deleteTitle": "ይህ ውይይት ይሰረዝ?"
+    },
+    "beta": "ቤታ",
+    "mcp": {
+      "title": "የKilo መሳሪያዎች",
+      "use": "የKilo መሳሪያዎችን ተጠቀም",
+      "useDescription": "ይህ ውይይት የKilo ሰርቨር የሚያቀርባቸውን መሳሪያዎች እንዲጠቀም ፍቀድ።",
+      "off": "የKilo መሳሪያዎች ተዘግተዋል",
+      "offDescription": "ይህ ውይይት ምንም የKilo መሳሪያ ወደ ሞዴሉ አይልክም።",
+      "connecting": "ወደ Kilo መሳሪያዎች በመገናኘት ላይ…",
+      "available": "የሚገኙ መሳሪያዎች፦ {{count}}",
+      "none": "ምንም መሳሪያ አይገኝም",
+      "noneDescription": "የKilo ሰርቨር ምንም መሳሪያ አልመለሰም።",
+      "unreachable": "የKilo መሳሪያዎችን ማግኘት አልተቻለም",
+      "unreachableDescription": "ሰርቨሩ አልመለሰም። ግንኙነትዎን ያረጋግጡ እና እንደገና ይሞክሩ።",
+      "unauthorized": "የKilo መሳሪያዎች ይህን ክፍለ ጊዜ አልተቀበሉም",
+      "unauthorizedDescription": "በዚህ ውይይት የKilo መሳሪያዎችን ለመጠቀም እንደገና ይግቡ።",
+      "unavailable": "የKilo መሳሪያዎች አይገኙም",
+      "unavailableDescription": "የKilo ሰርቨር ለዚህ መለያ አይገኝም።"
+    }
   },
   "appActions": {
     "start": {
