@@ -12,7 +12,7 @@ Native permission translations live in `plugins/permission-prompt-copy.json` for
 The camera and photo library prompts explain AI agent attachments and include specific examples.
 Background location descriptions remain disabled because the app does not request background location.
 Apple requires a localized motion description for the location library's linked APIs, even though Kilo does not use or collect motion activity.
-Development builds also localize the local-network prompt; production builds exclude that development-only translation and retain Expo's release stripping.
+Every build localizes the local-network prompt, because Chat can connect to a local model server.
 Changes require a new iOS build; an over-the-air update cannot change the native permission prompt.
 
 1. obtain Expo access
@@ -57,6 +57,36 @@ Changes require a new iOS build; an over-the-air update cannot change the native
 - Use `--display=1` for the outer display and `--display=3` for the inner display.
 - An inactive display produces a black screenshot.
 - Type a draft, change the appearance in both directions, and verify the draft stays readable.
+
+## Quick Chat backends
+
+Kilo remains the default backend. Custom backends use the harness SDK's remote
+model plugin, while the SDK owns conversations, tools, and compaction.
+
+- Open **Chat → Manage backends** to configure an API root, protocol, credentials, headers, and models.
+- Use Chat Completions, Responses, or Messages with the endpoint's API root, such as `https://api.openai.com/v1`.
+- Chat Completions uses `max_completion_tokens` by default. Select `max_tokens` when the endpoint requires the legacy field.
+- Enter models manually, or discover models when the endpoint supports discovery.
+- Use **Test model connection** to send a short inference request. The provider can charge for this request.
+- Enable tool calls only when the selected model and endpoint support them.
+
+Profiles and credentials remain on the device and belong to the signed-in
+account. Sign-out and account changes remove them.
+
+- Each conversation retains its backend and upstream model identity, including queued messages.
+- Failed questions retain their requested backend through Retry and restoration. Retry never substitutes the previous conversation's backend.
+- Editing or deleting a backend requires an explicit selection before its conversations can continue.
+- Changing backends shows a warning before sending conversation context to the new backend.
+- Failed or unavailable backends never select Kilo automatically. Compaction uses the conversation's selected backend.
+- Custom requests exclude Kilo authentication, Kilo headers, and browser cookies. Redirects are blocked.
+
+HTTPS is the default. Local HTTP requires approval for the configured endpoint.
+The warning covers unencrypted prompts, responses, credentials, and headers.
+
+- Android release builds require HTTPS, including local servers.
+- Android development builds permit approved loopback and private local HTTP endpoints.
+- iOS permits approved local HTTP endpoints through the local networking exception.
+- Public HTTP endpoints are rejected. HTTPS certificate checks remain enabled.
 
 ## Mobile Purchases
 

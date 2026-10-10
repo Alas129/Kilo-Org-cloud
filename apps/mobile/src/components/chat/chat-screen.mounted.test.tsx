@@ -4,8 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import '@/i18n';
 import { ChatScreen } from '@/components/chat/chat-screen';
-import { type ReactTestRenderer } from '@/test/renderer';
+import { act, type ReactTestRenderer } from '@/test/renderer';
 import { renderWithProviders } from '@/test/render-with-providers';
+import { type StoredChatBackend } from '@/lib/chat/backend-store';
+import { backendTargetId } from '@/lib/chat/backend-target';
 
 /**
  * What the chat screen draws while it is opening.
@@ -19,10 +21,20 @@ import { renderWithProviders } from '@/test/render-with-providers';
 const state = vi.hoisted(() => ({
   status: 'opening' as 'opening' | 'idle' | 'working',
   messages: [] as { info: { id: string } }[],
+  failed: null as string | null,
+  failureKey: null as string | null,
+  retry: vi.fn(),
+  send: vi.fn(),
+  model: 'm1',
 }));
 
-// One stable sheet model, so a check can prove the screen hands this very model
-// to the sheet rather than a copy of it.
+type AlertAction = { onPress?: () => void };
+const backendUi = vi.hoisted(() => ({
+  profiles: [] as StoredChatBackend[],
+  loaded: true,
+  alert: vi.fn<(title: string, message: string, actions?: AlertAction[]) => void>(),
+}));
+
 const mcpModel = vi.hoisted(() => ({
   view: {
     enabled: false,
@@ -68,17 +80,18 @@ vi.mock('@/lib/chat/use-chat', () => ({
   useChat: () => ({
     state: {
       sessionId: 's1',
-      model: 'm1',
+      model: state.model,
       turns: [],
       answering: '',
       status: state.status,
       asked: null,
       waiting: [],
-      failed: null,
+      failed: state.failed,
+      failureKey: state.failureKey,
     },
-    send: vi.fn(),
+    send: state.send,
     stop: vi.fn(),
-    retry: vi.fn(),
+    retry: state.retry,
   }),
 }));
 vi.mock('@/lib/chat/turns', () => ({ asMessages: () => state.messages }));
@@ -97,6 +110,13 @@ vi.mock('@/lib/hooks/use-session-model-options', () => ({
 vi.mock('@/lib/hooks/use-theme-colors', () => ({
   useThemeColors: () => ({ foreground: 'black', mutedForeground: 'grey' }),
 }));
+vi.mock('@/lib/chat/backend-store', () => ({
+  useChatBackends: () => backendUi.profiles,
+  getChatBackendsHasLoaded: () => backendUi.loaded,
+}));
+vi.mock('@/components/chat/backend-settings-sheet', () => ({
+  BackendSettingsControl: 'BackendSettingsControl',
+}));
 vi.mock('@/components/agents/chat-composer', () => ({ ChatComposer: 'ChatComposer' }));
 vi.mock('@/components/agents/message-bubble', () => ({ MessageBubble: 'MessageBubble' }));
 vi.mock('@/components/agents/session-message-list', () => ({
@@ -104,8 +124,14 @@ vi.mock('@/components/agents/session-message-list', () => ({
 }));
 vi.mock('@/components/empty-state', () => ({ EmptyState: 'EmptyState' }));
 vi.mock('@/components/screen-header', () => ({ ScreenHeader: 'ScreenHeader' }));
-vi.mock('@/components/ui/icons', () => ({ MessageCircle: 'MessageCircle', Wrench: 'Wrench' }));
+vi.mock('@/components/ui/icons', () => ({
+  MessageCircle: 'MessageCircle',
+  Wrench: 'Wrench',
+  Server: 'Server',
+}));
 vi.mock('@/components/ui/status-dot', () => ({ StatusDot: 'StatusDot' }));
+vi.mock('@/components/ui/accessible-status', () => ({ AccessibleStatus: 'AccessibleStatus' }));
+vi.mock('@/components/ui/button', () => ({ Button: 'Button' }));
 vi.mock('@/components/ui/text', () => ({ Text: 'Text' }));
 vi.mock('@/components/agents/session-detail-skeleton', () => ({
   SessionSkeletonMessages: 'SessionSkeletonMessages',
@@ -116,6 +142,7 @@ vi.mock('@/components/chat/mcp-settings-sheet', () => ({
   useMcpSettings: () => mcpModel,
 }));
 vi.mock('react-native', () => ({
+  Alert: { alert: backendUi.alert },
   ActivityIndicator: 'ActivityIndicator',
   Keyboard: { addListener: vi.fn(() => ({ remove: vi.fn() })) },
   KeyboardAvoidingView: 'KeyboardAvoidingView',
@@ -132,6 +159,14 @@ let view: Awaited<ReturnType<typeof renderWithProviders>> | undefined = undefine
 beforeEach(() => {
   state.status = 'opening';
   state.messages = [];
+  state.failed = null;
+  state.failureKey = null;
+  state.retry.mockClear();
+  backendUi.profiles = [];
+  backendUi.alert.mockClear();
+  backendUi.loaded = true;
+  state.model = 'm1';
+  state.send.mockClear();
 });
 afterEach(() => {
   view?.unmount();
@@ -145,6 +180,10 @@ async function mount(): Promise<ReactTestRenderer> {
 
 const count = (tree: ReactTestRenderer, type: string): number =>
   tree.root.findAll(node => (node.type as string) === type).length;
+
+function isHandler(value: unknown): value is (...args: unknown[]) => unknown {
+  return typeof value === 'function';
+}
 
 describe('the chat transcript while it opens', () => {
   it('shows a loading transcript instead of the empty state', async () => {
@@ -163,6 +202,13 @@ describe('the chat transcript while it opens', () => {
     expect(count(tree, 'SessionSkeletonMessages')).toBe(0);
   });
 
+  it('hands the sheet the whole chat-tools model', async () => {
+    const tree = await mount();
+    const sheet = tree.root.findAll(node => (node.type as string) === 'McpSettingsSheet')[0];
+
+    expect(sheet?.props.settings).toBe(mcpModel);
+    expect(sheet?.props.visible).toBe(false);
+  });
   it('shows the stored transcript once the open has finished with messages', async () => {
     state.status = 'idle';
     state.messages = [{ info: { id: 'm-1' } }];
@@ -172,12 +218,91 @@ describe('the chat transcript while it opens', () => {
     expect(count(tree, 'EmptyState')).toBe(0);
     expect(count(tree, 'SessionSkeletonMessages')).toBe(0);
   });
+});
 
-  it('hands the sheet the whole chat-tools model', async () => {
+describe('backend context-transfer approval', () => {
+  it('requires approval when returning from a picked custom backend before its queued move finishes', async () => {
+    state.status = 'working';
+    const backend: StoredChatBackend = {
+      id: 'backend-one',
+      revision: 1,
+      name: 'One',
+      baseUrl: 'https://one.example/v1',
+      apiKind: 'responses',
+      apiKey: '',
+      headers: {},
+      models: [{ id: 'shared', name: 'Shared', tools: false }],
+      allowLocalHttp: false,
+    };
+    backendUi.profiles = [backend];
+    const target = backendTargetId(backend, 'shared');
     const tree = await mount();
-    const sheet = tree.root.findAll(node => (node.type as string) === 'McpSettingsSheet')[0];
+    const composer = () =>
+      tree.root.find(node => (node.type as string) === 'ChatComposer').props as {
+        model: string;
+        onModelSelect: (model: string, variant: string) => void;
+      };
+    act(() => {
+      composer().onModelSelect(target, '');
+    });
+    expect(composer().model).toBe('m1');
+    act(() => {
+      backendUi.alert.mock.calls
+        .at(-1)?.[2]
+        ?.find(action => action.onPress)
+        ?.onPress?.();
+    });
+    expect(composer().model).toBe(target);
+    act(() => {
+      composer().onModelSelect('m1', '');
+    });
+    expect(backendUi.alert).toHaveBeenCalledTimes(2);
+    expect(composer().model).toBe(target);
+  });
+});
 
-    expect(sheet?.props.settings).toBe(mcpModel);
-    expect(sheet?.props.visible).toBe(false);
+describe('sending before stored backends load', () => {
+  it('does not report a stored custom target as deleted', async () => {
+    state.status = 'idle';
+    backendUi.loaded = false;
+    state.model = 'backend:server:1:model';
+    const tree = await mount();
+    const { onSend } = tree.root.find(node => (node.type as string) === 'ChatComposer').props;
+    if (!isHandler(onSend)) {
+      throw new TypeError('Composer has no send handler');
+    }
+    act(() => {
+      onSend('Question');
+    });
+    expect(backendUi.alert).not.toHaveBeenCalled();
+    expect(state.send).toHaveBeenCalledWith('Question', 'backend:server:1:model');
+  });
+});
+
+describe('a retained chat failure', () => {
+  it('shows only fixed copy and retries the retained work', async () => {
+    state.status = 'idle';
+    state.failed = 'Bearer provider-secret from a raw provider body';
+    state.failureKey = 'modelChat.backends.deletedBackend';
+    const tree = await mount();
+    const status = tree.root.find(node => (node.type as string) === 'AccessibleStatus');
+    expect(status.props.message).toBe(
+      'This chat backend was deleted. Choose another backend to continue.'
+    );
+    expect(
+      tree.root.findAll(node =>
+        Object.values(node.props).some(
+          value => typeof value === 'string' && value.includes('provider-secret')
+        )
+      )
+    ).toHaveLength(0);
+    const { onPress } = tree.root.find(node => (node.type as string) === 'Button').props;
+    if (!isHandler(onPress)) {
+      throw new TypeError('Retry button has no press handler');
+    }
+    act(() => {
+      onPress();
+    });
+    expect(state.retry).toHaveBeenCalledOnce();
   });
 });

@@ -8,6 +8,7 @@ import { clearClipboardImages } from '@/lib/agent-attachments/clipboard-image';
 import { clearArtifactMirror } from '@/lib/artifacts/artifact-mirror';
 import { resetArtifactMirrorSyncState } from '@/lib/artifacts/artifact-mirror-sync';
 import { notifyArtifactsChanged } from '@/lib/artifacts/artifact-provider-native';
+import { clearChatBackends } from '@/lib/chat/backend-store';
 import { forgetRemoteMcp } from '@/lib/chat/remote-mcp';
 import { clearRemoteMcpServers } from '@/lib/chat/remote-mcp-store';
 import { clearSettingsToolsEnabled } from '@/lib/chat/settings-tools-switch';
@@ -121,6 +122,7 @@ export function clearSessionScopedState(): void {
   runClear(clearSessionAutoApprove);
   runClear(forgetRemoteMcp);
   runClear(clearRemoteMcpServers);
+  runClear(clearChatBackends);
   runClear(clearSettingsToolsEnabled);
   runClear(clearUserSessionTitles);
   runClear(clearSessionGoalCollapseState);

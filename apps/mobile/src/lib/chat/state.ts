@@ -23,6 +23,8 @@ export type ChatState = {
    * puts a Retry under the last thing the person said.
    */
   readonly asked: string | null;
+  /** The target that question was asked of, even if moving onto it failed. */
+  readonly askedModel: string | null;
   /**
    * Questions typed while an answer was arriving, in the order they will be
    * asked. The composer stays open while the model works, so a person can ask
@@ -32,6 +34,8 @@ export type ChatState = {
   readonly waiting: readonly string[];
   /** Why the last question ended with no answer, for the log rather than the screen. */
   readonly failed: string | null;
+  /** A fixed localization key safe to display, never a provider's raw error. */
+  readonly failureKey: string | null;
 };
 
 /**
@@ -96,8 +100,10 @@ export const NOTHING = {
   turns: [] as readonly Turn[],
   answering: '',
   asked: null,
+  askedModel: null,
   waiting: [] as readonly string[],
   failed: null,
+  failureKey: null,
 } satisfies Omit<ChatState, 'sessionId' | 'model' | 'status'>;
 
 function publish(sessionId: string): void {

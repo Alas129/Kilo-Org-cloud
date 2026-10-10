@@ -117,12 +117,7 @@ const googleSignInPlugins: NonNullable<ExpoConfig['plugins']> = googleIosUrlSche
 const permissionLocales = buildPermissionPromptLocales(PERMISSION_PROMPT_COPY);
 const focusFilterCatalog = buildFocusFilterStringsFiles(FOCUS_FILTER_COPY);
 const nativeLocales: ExpoConfig['locales'] = Object.fromEntries(
-  SUPPORTED_LANGUAGES.map(tag => {
-    const { NSLocalNetworkUsageDescription: _developmentPrompt, ...productionPrompts } =
-      permissionLocales[tag].ios;
-    // Keep dev-launcher's base description unchanged so its release strip still matches.
-    return [tag, { ios: isProductionBuild ? productionPrompts : permissionLocales[tag].ios }];
-  })
+  SUPPORTED_LANGUAGES.map(tag => [tag, { ios: permissionLocales[tag].ios }])
 );
 
 const config: ExpoConfig = {
@@ -211,6 +206,10 @@ const config: ExpoConfig = {
     },
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
+      // Custom LAN backends require an app-level approval before each endpoint
+      // can use HTTP. ATS stays enabled for public HTTPS endpoints.
+      NSAppTransportSecurity: { NSAllowsLocalNetworking: true },
+      NSLocalNetworkUsageDescription: permissionLocales.en.ios.NSLocalNetworkUsageDescription,
       // iOS reads this list, not the JS catalog. Without it the system treats
       // the app as English-only, so OS-drawn text we cannot translate — the
       // native Sign in with Apple button above all — stays English on a
