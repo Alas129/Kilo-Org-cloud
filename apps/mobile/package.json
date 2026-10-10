@@ -111,6 +111,7 @@
     "expo-widgets": "57.0.22",
     "i18next": "^26.4.2",
     "jotai": "2.20.3",
+    "llama.rn": "0.12.9",
     "lowlight": "3.3.0",
     "lucide-react-native": "1.49.0",
     "marked": "18.0.14",

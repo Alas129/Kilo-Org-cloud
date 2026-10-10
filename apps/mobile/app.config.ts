@@ -283,7 +283,9 @@ const config: ExpoConfig = {
         android: {
           enableMinifyInReleaseBuilds: true,
           // Keep expo-task-manager's reflectively-loaded headless app loader.
-          extraProguardRules: ANDROID_HEADLESS_APP_LOADER_PROGUARD_RULES,
+          // R8 runs on release builds and llama.rn's JSI bindings are reached
+          // only through JNI, so every com.rnllama class has to be kept too.
+          extraProguardRules: `${ANDROID_HEADLESS_APP_LOADER_PROGUARD_RULES}\n-keep class com.rnllama.** { *; }`,
           // Old release AABs shipped without resource shrinking. Keep this on so
           // the unused zz_unused_shrink_sentinel raw resource is stripped and
           // the inspector contract can catch a shrink regression before it lands.
@@ -314,6 +316,18 @@ const config: ExpoConfig = {
             { name: 'RecaptchaInterop', modular_headers: true },
           ],
         },
+      },
+    ],
+    // llama.cpp for on-device GGUF inference. The two options are the defaults
+    // turned off: the podspec already compiles itself as C++20, and the app
+    // offloads nothing to Android GPUs, so neither global Podfile flags nor
+    // Qualcomm native libraries belong in the manifest. iOS memory entitlements
+    // stay on: a GGUF context needs the raised ceiling.
+    [
+      'llama.rn',
+      {
+        forceCxx20: false,
+        enableOpenCLAndHexagon: false,
       },
     ],
     [
