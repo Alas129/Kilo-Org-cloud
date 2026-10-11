@@ -41,15 +41,15 @@ export function ModelToolsHint({ model, backends, localModels }: Readonly<ModelT
   const customModel = backends
     .find(backend => backend.id === customTarget?.backendId)
     ?.models.find(one => one.id === customTarget?.modelId);
-  // System on-device models get no tools, like a custom model without tools.
-  if (
-    customModel === undefined &&
-    ggufModel === undefined &&
-    !localModels.some(local => local.targetId === model)
-  ) {
+  const systemModel = localModels.find(local => local.targetId === model);
+  if (customModel === undefined && ggufModel === undefined && systemModel === undefined) {
     return null;
   }
-  const tools = customModel?.tools === true || ggufModel?.tools === true;
+  // A system model receives tools when its module says it runs the tool loop.
+  const tools =
+    customModel?.tools === true ||
+    ggufModel?.tools === true ||
+    systemModel?.availability?.tools === true;
   return (
     <Text className="px-4 pt-2 text-xs text-muted-foreground">
       {t(modelCapabilityKey(tools, images))}

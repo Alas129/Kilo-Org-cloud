@@ -6,10 +6,19 @@ import {
   type ModelUsage,
   type StopReason,
 } from '@kilocode/harness-sdk';
-import { Effect, Stream } from 'effect';
+import { Chunk, Effect, Stream } from 'effect';
 import { z } from 'zod';
 
 import { LocalModelError, type LocalModelProblem } from './local-model-error';
+import {
+  nativeRequest,
+  type NativeRequest,
+  type NativeToolCall,
+  type NativeToolResult,
+  resultsOf,
+} from './native-request';
+
+export { IMAGE_NOT_SENT } from './native-request';
 
 /** What an on-device provider says about itself. Reasons are stable codes, never raw text. */
 export type NativeAvailability = {
@@ -24,27 +33,14 @@ export type NativeAvailability = {
   readonly images?: boolean;
   /** The most images one request can carry. Absent means no fixed limit. */
   readonly maxImages?: number;
-};
-
-/** A base64 image and its media type, as the harness prompt carries it. */
-type NativeImage = { readonly media: string; readonly data: string };
-
-type NativeMessage = {
-  readonly role: 'user' | 'assistant';
-  readonly text: string;
-  /** Present only for a model that reads images. */
-  readonly images?: readonly NativeImage[];
-};
-
-type NativeRequest = {
-  readonly id: string;
-  readonly system: string;
-  readonly messages: readonly NativeMessage[];
-  readonly maxTokens: number;
+  /** True when the module runs the harness tool loop. Absent means text only. */
+  readonly tools?: boolean;
 };
 
 export type NativeModelEvent =
   | { readonly id: string; readonly kind: 'delta'; readonly text: string }
+  /** The model asked for tools. The generation waits until `resume` answers every call. */
+  | { readonly id: string; readonly kind: 'toolCalls'; readonly calls: readonly NativeToolCall[] }
   | {
       readonly id: string;
       readonly kind: 'done';
@@ -61,11 +57,19 @@ export type NativeModelBridge = {
   readonly generate: (request: NativeRequest) => Promise<void>;
   readonly cancel: (id: string) => Promise<void>;
   readonly countTokens?: (request: NativeRequest) => Promise<number>;
+  /** Answers the calls a waiting generation asked for. That generation then streams on. */
+  readonly resume?: (id: string, results: readonly NativeToolResult[]) => Promise<void>;
   readonly addListener: (
     eventName: 'onModelEvent',
     listener: (event: NativeModelEvent) => void
   ) => { remove: () => void };
 };
+
+/** A generation that asked for tools and waits, between two harness rounds, for their results. */
+type ToolLoop = { waiting?: { readonly id: string; readonly calls: readonly string[] } };
+
+/** One native module and the tool round it may hold open. */
+type Provider = { readonly bridge: NativeModelBridge; readonly loop: ToolLoop };
 
 /** Reasons that mean the model cannot run here now, as opposed to a failed answer. */
 const UNAVAILABLE_REASONS = new Set([
@@ -109,57 +113,6 @@ function failure(problem: LocalModelProblem, started: boolean): ModelError {
 }
 
 /**
- * What a model gets in place of an image over its per-request limit. The
- * newest images are the ones sent, and the model is told an older one was there.
- */
-export const IMAGE_NOT_SENT =
-  '[An image was shared here. This model reads only the most recent images, so it is not sent.]';
-
-/**
- * Text, plus the user's images for a model that reads them. Reasoning and tool
- * parts never reach a system model.
- */
-function nativeRequest(
-  request: ModelRequest,
-  id: string,
-  availability: NativeAvailability
-): NativeRequest {
-  const readsImages = availability.images === true;
-  let imageRoom = availability.maxImages ?? Number.POSITIVE_INFINITY;
-  const messages: NativeMessage[] = [];
-  // Newest first, so the newest images take the request's image limit.
-  for (const message of request.prompt.messages.toReversed()) {
-    const texts: string[] = [];
-    const images: NativeImage[] = [];
-    for (const part of message.parts.toReversed()) {
-      if (part.kind === 'text') {
-        texts.push(part.text);
-      } else if (part.kind === 'image' && readsImages && message.role === 'user') {
-        if (imageRoom > 0) {
-          imageRoom -= 1;
-          images.push({ media: part.media, data: part.data });
-        } else {
-          texts.push(IMAGE_NOT_SENT);
-        }
-      }
-    }
-    const text = texts.toReversed().join('\n\n');
-    if (images.length > 0) {
-      messages.push({ role: message.role, text, images: images.toReversed() });
-    } else if (text !== '') {
-      messages.push({ role: message.role, text });
-    }
-  }
-  const ceiling = availability.maxOutputTokens;
-  return {
-    id,
-    system: request.prompt.system.map(block => block.text).join('\n\n'),
-    messages: messages.toReversed(),
-    maxTokens: ceiling > 0 ? Math.min(request.maxTokens, ceiling) : request.maxTokens,
-  };
-}
-
-/**
  * A deliberately high guess of about three characters per token. It is not a
  * count: it exists so a session on a small on-device window still compacts
  * when the provider reports no usage and cannot count tokens.
@@ -181,19 +134,43 @@ async function inputTokensOf(
       // The count is optional; the estimate below keeps compaction working.
     }
   }
-  return estimatedTokens(request.system + request.messages.map(message => message.text).join(''));
+  const texts = request.messages.map(message =>
+    message.role === 'toolCalls'
+      ? message.calls.map(call => call.name + call.arguments).join('')
+      : message.text
+  );
+  return estimatedTokens(request.system + texts.join(''));
 }
 
 function answer(
-  bridge: NativeModelBridge,
+  { bridge, loop }: Provider,
   availability: NativeAvailability,
   request: ModelRequest
 ): Stream.Stream<ModelEvent, ModelError> {
   return Stream.async<ModelEvent, ModelError>(emit => {
+    const tools = availability.tools === true && bridge.resume !== undefined;
     sequence += 1;
-    const native = nativeRequest(request, `quick-chat-${sequence}`, availability);
-    // `running` is the only state that owns a live native inference.
-    let state: 'running' | 'finishing' | 'over' = 'running';
+    const native = nativeRequest(request, {
+      id: `quick-chat-${sequence}`,
+      ceiling: availability.maxOutputTokens,
+      tools,
+      images: availability.images === true,
+      maxImages: availability.maxImages,
+    });
+    const results = tools ? resultsOf(request) : undefined;
+    const { waiting } = loop;
+    loop.waiting = undefined;
+    // The results answer the waiting generation only when they answer every call it made.
+    const resumption =
+      waiting !== undefined &&
+      results?.length === waiting.calls.length &&
+      results.every(result => waiting.calls.includes(result.callId))
+        ? { id: waiting.id, results }
+        : undefined;
+    const id = resumption?.id ?? native.id;
+    // `running` is the only state that owns a live native inference. `waiting`
+    // hands it to the next round, which answers its tool calls.
+    let state: 'running' | 'finishing' | 'waiting' | 'over' = 'running';
     let output = '';
     const fail = (reason: string | undefined) => {
       state = 'over';
@@ -216,21 +193,67 @@ function answer(
       await emit.single({ kind: 'done', usage, stop });
       await emit.end();
     };
+    // The round ends here; the native generation waits for the next round's results.
+    const pause = async (calls: readonly NativeToolCall[]) => {
+      state = 'waiting';
+      loop.waiting = { id, calls: calls.map(call => call.id) };
+      output += calls.map(call => call.name + call.arguments).join('');
+      await emit.chunk(
+        Chunk.fromIterable(
+          calls.map(
+            (call): ModelEvent => ({
+              kind: 'toolCall',
+              call: { id: call.id, name: call.name, arguments: call.arguments },
+            })
+          )
+        )
+      );
+      const usage: ModelUsage = {
+        inputTokens: await inputTokensOf(bridge, availability, native),
+        outputTokens: estimatedTokens(output),
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      };
+      await emit.single({ kind: 'done', usage, stop: 'tools' });
+      await emit.end();
+    };
     const subscription = bridge.addListener('onModelEvent', event => {
-      if (event.id !== native.id || state !== 'running') {
+      if (event.id !== id || state !== 'running') {
         return;
       }
       if (event.kind === 'delta') {
         output += event.text;
         void emit.single({ kind: 'delta', text: event.text });
+      } else if (event.kind === 'toolCalls') {
+        void pause(event.calls);
       } else if (event.kind === 'error') {
         fail(event.reason);
       } else {
         void finish(event);
       }
     });
+    const stopNative = async (stopped: string) => {
+      try {
+        await bridge.cancel(stopped);
+      } catch {
+        // The native request already ended; there is nothing left to stop.
+      }
+    };
     const run = async () => {
       try {
+        if (resumption !== undefined) {
+          await bridge.resume?.(resumption.id, resumption.results);
+          return;
+        }
+        // A waiting generation this request does not answer can never continue.
+        if (waiting !== undefined) {
+          await stopNative(waiting.id);
+        }
+        // Results with no generation waiting for them: the round they answer is gone.
+        if (results !== undefined) {
+          fail(undefined);
+          return;
+        }
         await bridge.generate(native);
         // A bridge resolves only after it emitted its terminal event. A resolve
         // with none is a bridge defect: failing is what releases the caller
@@ -246,20 +269,13 @@ function answer(
         }
       }
     };
-    const stopNative = async () => {
-      try {
-        await bridge.cancel(native.id);
-      } catch {
-        // The native request already ended; there is nothing left to stop.
-      }
-    };
     void run();
     return Effect.sync(() => {
       subscription.remove();
       if (state === 'running') {
         // Interrupted mid-answer: stop the native task. Its late events are ignored.
         state = 'over';
-        void stopNative();
+        void stopNative(id);
       }
     });
   });
@@ -269,8 +285,13 @@ function answer(
  * Inference over a native on-device model. The harness still owns the
  * conversation: every request carries the full rendered history, and nothing
  * falls back to another model when this one is unavailable or busy.
+ *
+ * A model that runs tools keeps one generation open across a tool round. The
+ * harness runs the calls, and its next request carries their results, which
+ * resume that generation instead of starting a new one.
  */
 export function nativeModelClient(bridge: NativeModelBridge): ModelClientService {
+  const provider: Provider = { bridge, loop: {} };
   return {
     stream: request =>
       Stream.unwrap(
@@ -285,7 +306,7 @@ export function nativeModelClient(bridge: NativeModelBridge): ModelClientService
             availability => availability.status === 'available',
             () => failure('unavailable', false)
           ),
-          Effect.map(availability => answer(bridge, availability, request))
+          Effect.map(availability => answer(provider, availability, request))
         )
       ),
   };
