@@ -274,10 +274,6 @@ export function ChatScreen({ opened }: Readonly<ChatScreenProps>) {
             onStop={handleStop}
             isStreaming={state.status === 'working'}
             placeholder={t('common.message')}
-            mode="ask"
-            onModeChange={() => {
-              // A chat is only ever an ask.
-            }}
             model={model}
             variant={variant}
             modelOptions={availableOptions}
