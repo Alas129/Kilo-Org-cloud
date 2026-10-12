@@ -107,7 +107,7 @@ type MaterializedPrompt = Awaited<ReturnType<typeof materializeMessageAttachment
 type PendingPrompt = {
   payload: ControlPlanePromptPayload;
   receivedAt: number;
-  /** A memory hold ended after receipt; the delivery deadline counts from here. */
+  /** The delivery deadline counts from this timestamp, set by a memory-hold release or while a serialized wait holds. */
   deliveryResumedAt?: number;
   nativeObserved?: boolean;
   acknowledged?: boolean;
@@ -294,12 +294,45 @@ export function createTurnManager(deps: TurnManagerDeps) {
     emitEvents(sessionId, [{ type: 'error', properties: { error: message, fatal: false } }]);
   }
 
+  /** The runtime's current execution for this route's root, or undefined when none is live. */
+  function liveNativeState(turn: Turn): ReturnType<TurnKiloRuntime['sessionState']> {
+    return deps.runtimes.get(turn.route.runtimeKey)?.sessionState(turn.route.kiloSessionId);
+  }
+
   /**
-   * Kilo has not observed this prompt within the 120 s delivery deadline. The deadline does not
-   * run while the runtime is memory-held, and restarts when the hold ends.
+   * The command/summary a later prompt is queued behind in the serialized submission chain: it was
+   * handed to Kilo, Kilo observed it and still has a live execution for the route, and its HTTP
+   * response has not settled, so the follower cannot dispatch yet. Once that execution ends there
+   * is no native bound left and the follower is no longer exempt.
+   */
+  function blockedBySerializedCommand(turn: Turn, entry: PendingPrompt): boolean {
+    if (liveNativeState(turn) === undefined) return false;
+    for (const earlier of turn.prompts) {
+      if (earlier === entry) return false;
+      if (earlier.dispatched === true && earlier.acknowledged !== true) {
+        return earlier.nativeObserved === true && earlier.payload.turn.type === 'command';
+      }
+    }
+    return false;
+  }
+
+  /** Record the accepted wait for every follower, so its own deadline is not charged for it. */
+  function refreshSerializedWaits(turn: Turn): void {
+    for (const entry of turn.prompts) {
+      if (entry.nativeObserved) continue;
+      if (blockedBySerializedCommand(turn, entry)) entry.deliveryResumedAt = now();
+    }
+  }
+
+  /**
+   * Kilo has not observed this prompt within the 120 s delivery deadline. The deadline does not run
+   * while the runtime is memory-held or while the prompt waits behind a command/summary Kilo already
+   * accepted and still supervises; `tick` refreshes the deadline during either pause, so it is not
+   * charged to the prompt when the wait ends. This predicate has no side effects.
    */
   function deliveryExpired(turn: Turn, entry: PendingPrompt): boolean {
     if (entry.nativeObserved || memoryHeldRuntimes.has(turn.route.runtimeKey)) return false;
+    if (blockedBySerializedCommand(turn, entry)) return false;
     const from = Math.max(entry.receivedAt, entry.deliveryResumedAt ?? 0);
     return now() - from >= PROMPT_DELIVERY_TIMEOUT_MS;
   }
@@ -480,6 +513,19 @@ export function createTurnManager(deps: TurnManagerDeps) {
     }
   }
 
+  /**
+   * Kilo cannot take the prompt now, or an earlier-received prompt is still parked undispatched.
+   * Parking behind it keeps dispatch order equal to receipt order; the next drain re-chains both.
+   */
+  function mustPark(turn: Turn, pending: PendingPrompt): boolean {
+    if (queueState(turn.route) === 'queue') return true;
+    for (const earlier of turn.prompts) {
+      if (earlier === pending) return false;
+      if (earlier.dispatched !== true) return true;
+    }
+    return false;
+  }
+
   function chainSubmit(turn: Turn, pending: PendingPrompt): void {
     const prompts = turn.prompts;
     turn.submitting = turn.submitting
@@ -525,13 +571,13 @@ export function createTurnManager(deps: TurnManagerDeps) {
       message = await pending.message;
     }
     if (!isCurrent()) return;
-    if (queueState(route) === 'queue') {
+    if (mustPark(turn, pending)) {
       if (!turn.inbox.includes(pending)) turn.inbox.push(pending);
       return;
     }
     const client = await runtime.ensure();
     if (!isCurrent()) return;
-    if (runtime.isRetiredClient(client) || queueState(route) === 'queue') {
+    if (runtime.isRetiredClient(client) || mustPark(turn, pending)) {
       if (!turn.inbox.includes(pending)) turn.inbox.push(pending);
       return;
     }
@@ -875,6 +921,7 @@ export function createTurnManager(deps: TurnManagerDeps) {
         continue;
       }
       drainInbox(turn);
+      refreshSerializedWaits(turn);
       const pending = turn.prompts.find(entry => deliveryExpired(turn, entry));
       if (pending && turn.phase !== 'finalizing') {
         pending.abort.abort(new Error('Prompt delivery timed out'));
@@ -1367,7 +1414,14 @@ export function createTurnManager(deps: TurnManagerDeps) {
       return [...turns.values()].some(
         turn =>
           turn.phase === 'finalizing' ||
-          turn.prompts.some(entry => !entry.nativeObserved && !deliveryExpired(turn, entry))
+          turn.prompts.some(
+            entry =>
+              !entry.nativeObserved &&
+              // The live native execution running the serialized command owns compute,
+              // including sleeping while that command waits on the user.
+              !blockedBySerializedCommand(turn, entry) &&
+              !deliveryExpired(turn, entry)
+          )
       );
     },
 

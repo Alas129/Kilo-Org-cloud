@@ -119,12 +119,15 @@ rewrite terminal message outcomes or prepare/wake a stopped sandbox.
 
 Late outcomes and notifications for terminal messages are ignored. The backstop exists only for
 lost notifications; the Sandbox DO and the wrapper settle every normal case earlier. Both values
-are derived from the owners' timers so the backstop never ends work that its owner still runs:
+are derived from the owners' timers so the backstop does not end work within its owner's bound:
 queued = reconnect window (90 s) + one preparation attempt (12 min) + 3 min, which covers the
 longest normal wait (a message sent while the socket is down, then a fresh attempt on a new
-sandbox); accepted = turn hard cap (120 min) + 5 min. After every message change the Session DO sets
-the alarm to the earliest backstop, transport-recovery, report or callback obligation, and clears it
-when none remains (for example after Stop and successful terminal reporting).
+sandbox); accepted = turn hard cap (120 min) + 5 min. The hard cap bounds one native execution, not
+an accepted message, so a batch whose follow-up waits behind a serialized command spans several
+executions and can outlive the accepted backstop (see "Prompts and turn outcome" in section 7).
+After every message change the Session DO sets the alarm to the earliest backstop,
+transport-recovery, report or callback obligation, and clears it when none remains (for example
+after Stop and successful terminal reporting).
 
 ### Queued transport recovery
 
@@ -304,8 +307,10 @@ The wrapper heartbeat (every 5 s) carries `active`. Each Kilo process owns a nat
 session supervisor that observes every session before Cloud route filtering, including
 unrouted sessions, subagents and autonomous continuations. Its running or stopping
 executions keep compute active independently of accepted Cloud messages and UI selection.
-Preparation, pending prompt delivery (bounded to 2 minutes), finalization and recent terminal
-input also contribute. An accepted UI turn alone is not activity.
+Preparation, bounded prompt delivery, finalization and recent terminal input also contribute.
+The 2-minute delivery budget excludes legitimate serialized command/summarization waits
+described below. A follow-up waiting behind a serialized command adds no compute activity of
+its own; the command's live native execution decides it. An accepted UI turn alone is not activity.
 
 A session blocked only on questions or permissions does not need compute. Pending requests
 are tracked separately; answering one does not clear another, and an independent runnable
@@ -543,9 +548,17 @@ has no key, so it restores and captures nothing: setup output is never published
   received after reservation waits for the replacement rather than receiving a retiring client.
 - Commands and summarization keep sequential wrapper submission: later messages may wait for the
   current command/summary HTTP response before reaching Kilo. This wait is accepted and is not a
-  remediation blocker or a requirement for a Kilo/SDK change. Ordinary prompts still reach Kilo
-  during model execution through `prompt_async`. Kilo owns its native queue and execution; the
-  wrapper must not add a shadow native queue or concurrent HTTP to bypass command ordering.
+  remediation blocker or a requirement for a Kilo/SDK change. A later message waiting behind a
+  dispatched command/summary Kilo has already observed and still supervises does not consume its
+  2-minute prompt-delivery budget; that budget stays current while the wait holds, so it does not
+  expire the instant the response clears. The native 20-minute no-progress bound applies while
+  executing; its clock pauses during user waits, and the 120-minute wall-clock cap still bounds
+  the wait, not the batch: the follower starts a new native execution once the response clears, so a
+  batch spanning several executions can outlive the accepted backstop and fail `no_outcome`. A command
+  that is not currently observed, or a plain prompt, still expires as a stuck intake.
+  Ordinary prompts still reach Kilo during model execution through `prompt_async`. Kilo owns its
+  native queue and execution; the wrapper must not add a shadow native queue or concurrent HTTP to
+  bypass command ordering.
 - The wrapper tracks each Kilo root session through Kilo's status, idle, turn-close and error events,
   and remembers the last submitted `messageId`.
 - Outcome frame: `sessionId`, `status`, optional `reason`, `lastMessageId`.
