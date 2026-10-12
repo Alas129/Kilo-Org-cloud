@@ -65,6 +65,19 @@ function hasTrpcErrorCode(error: unknown): boolean {
   return TrpcCodeEnvelopeSchema.safeParse(error).success;
 }
 
+function isNetworkLayerError(error: unknown): boolean {
+  if (hasErrorName(error, TRPC_CLIENT_ERROR_NAME)) {
+    return true;
+  }
+  if (hasTrpcErrorCode(error)) {
+    return true;
+  }
+  if (error instanceof CancelledError) {
+    return true;
+  }
+  return hasErrorName(error, REQUEST_DEADLINE_ERROR_NAME);
+}
+
 /**
  * True when the error is already reported by the network layer: a tRPC client
  * error (by name, or any error carrying a tRPC `code` envelope), a react-query
@@ -72,20 +85,15 @@ function hasTrpcErrorCode(error: unknown): boolean {
  * wrapper own these (a timeout is a breadcrumb there, not an event), so
  * reporting them again would duplicate issues. A non-tRPC error that merely
  * carries a top-level `code` is not skipped — that would drop unrelated app
- * errors.
+ * errors. An error whose `cause` is one of these is skipped too: a hook that
+ * maps a server error onto user-facing copy keeps the server error as `cause`,
+ * and the network layer owns it.
  */
 export function isAlreadyReportedNetworkError(error: unknown): boolean {
   try {
-    if (hasErrorName(error, TRPC_CLIENT_ERROR_NAME)) {
-      return true;
-    }
-    if (hasTrpcErrorCode(error)) {
-      return true;
-    }
-    if (error instanceof CancelledError) {
-      return true;
-    }
-    return hasErrorName(error, REQUEST_DEADLINE_ERROR_NAME);
+    return (
+      isNetworkLayerError(error) || (error instanceof Error && isNetworkLayerError(error.cause))
+    );
   } catch {
     return false;
   }
