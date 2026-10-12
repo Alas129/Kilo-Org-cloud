@@ -511,6 +511,108 @@ describe('turn manager submission', () => {
     expect(client.commands[0]).toMatchObject({ sessionId: KILO_SESSION, command: 'init' });
   });
 
+  it('cancels a compact completion wait without dispatching its follow-up after Stop', async () => {
+    const h = createHarness();
+    h.registerRoute(routeSpec());
+    h.manager.submit(SESSION_ID, commandPayload('c1', 'compact'));
+    await settle();
+    // The compact's native execution owns compute; its completion wait adds none.
+    expect(h.manager.hasPendingWork()).toBe(false);
+    h.manager.submit(SESSION_ID, promptPayload('m1'));
+    h.manager.abort(SESSION_ID);
+    await settle();
+    h.manager.observeKiloEvent(completedKiloTurn());
+    await settle();
+    expect(h.client(routeSpec()).prompts).toEqual([]);
+    expect(outcomeFrames(h.frames)).toMatchObject([{ status: 'cancelled', lastMessageId: 'm1' }]);
+    expect(h.manager.hasPendingWork()).toBe(false);
+  });
+
+  it('fails a standalone compact when its close is not observed within the bounded wait', async () => {
+    const h = createHarness();
+    h.registerRoute(routeSpec());
+    h.setState(KILO_SESSION, runningState);
+    const summary = Promise.withResolvers<boolean>();
+    h.client(routeSpec()).setSummaryImpl(() => summary.promise);
+    h.manager.submit(SESSION_ID, commandPayload('c1', 'compact'));
+    await settle();
+    // A long summary, then a close wait while the execution is live: its supervisor bounds both.
+    h.advance(10 * 60_000);
+    summary.resolve(true);
+    await settle();
+    for (let index = 0; index < 5; index += 1) {
+      h.advance(60_000);
+      h.manager.tick();
+    }
+    expect(outcomeFrames(h.frames)).toEqual([]);
+    // The compact's native execution owns compute; its completion wait adds none.
+    expect(h.manager.hasPendingWork()).toBe(false);
+
+    // The execution ends without a processed close: the delivery deadline starts now.
+    h.setState(KILO_SESSION, undefined);
+    h.manager.refreshActivity(DIRECTORY);
+    h.manager.tick();
+    expect(outcomeFrames(h.frames)).toEqual([]);
+    h.advance(120_000 - 1);
+    h.manager.tick();
+    expect(outcomeFrames(h.frames)).toEqual([]);
+    h.advance(1);
+    h.manager.tick();
+    await settle();
+    expect(outcomeFrames(h.frames)).toMatchObject([
+      { status: 'failed', reason: 'prompt_failed', lastMessageId: 'c1' },
+    ]);
+    expect(h.manager.hasPendingWork()).toBe(false);
+  });
+
+  it('pauses the compact close wait while Kilo is memory-held', async () => {
+    const h = createHarness();
+    const spec = routeSpec();
+    const key = runtimeKey(spec);
+    h.registerRoute(spec);
+    const client = h.client(spec);
+    h.manager.submit(SESSION_ID, commandPayload('c1', 'compact'));
+    await settle();
+    h.manager.submit(SESSION_ID, promptPayload('m1'));
+    await settle();
+    expect(client.prompts).toEqual([]);
+
+    // The response arrived but the hold stalls the feed, so the close is late.
+    h.manager.onRuntimeMemoryHold({ directory: DIRECTORY, held: true, key });
+    h.advance(10 * 60_000);
+    h.manager.tick();
+    expect(outcomeFrames(h.frames)).toEqual([]);
+
+    h.manager.onRuntimeMemoryHold({ directory: DIRECTORY, held: false, key });
+    h.advance(120_000 - 1);
+    h.manager.tick();
+    expect(outcomeFrames(h.frames)).toEqual([]);
+    h.manager.observeKiloEvent(completedKiloTurn());
+    await settle();
+    expect(client.prompts.map(call => call.messageId)).toEqual(['m1']);
+    expect(outcomeFrames(h.frames)).toEqual([]);
+  });
+
+  it('retires the old compact completion wait without failing its restart resubmission', async () => {
+    const h = createHarness();
+    h.registerRoute(routeSpec());
+    h.manager.submit(SESSION_ID, commandPayload('c1', 'compact'));
+    await settle();
+    h.manager.submit(SESSION_ID, promptPayload('m1'));
+    h.manager.onRuntimeRestart({ directory: DIRECTORY, reason: 'hang', key: DIRECTORY });
+    await settle();
+    expect(h.client(routeSpec()).summaries).toHaveLength(2);
+    expect(h.client(routeSpec()).prompts).toEqual([]);
+    expect(outcomeFrames(h.frames)).toEqual([]);
+    h.manager.observeKiloEvent(completedKiloTurn());
+    await settle();
+    expect(h.client(routeSpec()).prompts.map(call => call.messageId)).toEqual(['m1']);
+    expect(outcomeFrames(h.frames)).toEqual([]);
+    h.manager.observeKiloEvent(completedKiloTurn());
+    await settle();
+    expect(outcomeFrames(h.frames)).toMatchObject([{ status: 'completed', lastMessageId: 'm1' }]);
+  });
+
   it('drains the inbox when a heartbeat arrives after Kilo recovers', async () => {
     const h = createHarness();
     h.registerRoute(routeSpec());
@@ -583,12 +685,16 @@ describe('serialized command delivery wait', () => {
 
     summary.resolve(true);
     await settle();
-    expect(client.prompts.map(call => call.messageId)).toEqual(['m1']);
+    // The follower also waits for the compact's close. The close defers while the native
+    // execution is still live; clearing it reconciles the deferred completion.
+    expect(client.prompts).toEqual([]);
     h.manager.observeKiloEvent(completedKiloTurn());
-    // The close defers while the native execution is still live; clearing it
-    // reconciles the deferred completion.
     h.setState(KILO_SESSION, undefined);
     h.manager.refreshActivity(DIRECTORY);
+    await settle();
+    expect(client.prompts.map(call => call.messageId)).toEqual(['m1']);
+    expect(outcomeFrames(h.frames)).toEqual([]);
+    h.manager.observeKiloEvent(completedKiloTurn());
     await settle();
     expect(outcomeFrames(h.frames)).toEqual([
       { type: 'session.outcome', sessionId: SESSION_ID, status: 'completed', lastMessageId: 'm1' },
@@ -609,6 +715,8 @@ describe('serialized command delivery wait', () => {
     expect(outcomeFrames(h.frames)).toEqual([]);
 
     summary.resolve(true);
+    h.setState(KILO_SESSION, undefined);
+    h.manager.observeKiloEvent(completedKiloTurn());
     await settle();
     expect(client.summaries).toHaveLength(1);
     expect(client.prompts.map(call => call.messageId)).toEqual(['m1', 'm2']);
@@ -761,6 +869,8 @@ describe('serialized command delivery wait', () => {
     // but its own deadline must still run out a normal window later.
     h.setFlags(spec, { restarting: true, suspected: true });
     summary.resolve(true);
+    h.setState(KILO_SESSION, undefined);
+    h.manager.observeKiloEvent(completedKiloTurn());
     await settle();
     h.manager.tick();
     expect(outcomeFrames(h.frames)).toEqual([]);
