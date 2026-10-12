@@ -83,6 +83,25 @@ describe('installErrorReporting', () => {
     expect(sentryMock.captureException).not.toHaveBeenCalled();
   });
 
+  it('routes a breadcrumb to addBreadcrumb and sends no event', async () => {
+    const install = await loadInstallErrorReporting();
+    install();
+    const { addTelemetryBreadcrumb } = await import('@/lib/telemetry/error-sink');
+
+    const breadcrumb = {
+      category: 'auth',
+      message: 'auth branch',
+      level: 'warning',
+      data: { 'auth.cause': 'user' },
+    } as const;
+    addTelemetryBreadcrumb(breadcrumb);
+
+    expect(sentryMock.addBreadcrumb).toHaveBeenCalledTimes(1);
+    expect(sentryMock.addBreadcrumb).toHaveBeenCalledWith(breadcrumb);
+    expect(sentryMock.captureMessage).not.toHaveBeenCalled();
+    expect(sentryMock.captureException).not.toHaveBeenCalled();
+  });
+
   it('wraps the global fetch and leaves a breadcrumb, not an event, for a transport failure', async () => {
     const install = await loadInstallErrorReporting();
     install();
