@@ -7,7 +7,7 @@ import { McpSettingsSheet, useMcpSettings } from '@/components/chat/mcp-settings
 import { useWebSearchSetting } from '@/components/chat/web-search-row';
 import { i18n } from '@/i18n';
 import { type KiloMcpState } from '@/lib/chat/kilo-mcp';
-import { type RemoteMcpServerState } from '@/lib/chat/remote-mcp';
+import { type RemoteMcpServerState } from '@/lib/chat/remote-mcp-state';
 import {
   type RemoteMcpServerDraft,
   type RemoteMcpServerPatch,
@@ -524,6 +524,30 @@ describe('the chat-tools sheet', () => {
     expect(required(buttonFor('Retry'), 'Retry').props.loading).toBe(false);
     // The chat's tool list has to move onto what the Retry just found.
     expect(h.refreshChatTools).toHaveBeenCalled();
+  });
+
+  it('asks the servers as it opens, so a restart never leaves a server unasked', async () => {
+    h.servers.value = [server('alpha')];
+    await mount();
+    await flush();
+
+    // The open is not a person's Retry, so it gets the automatic deadline.
+    expect(h.ensureRemoteMcp).toHaveBeenCalledWith(place);
+    expect(h.refreshChatTools).toHaveBeenCalled();
+  });
+
+  it('offers a Retry on a server that answered with no tools', async () => {
+    h.servers.value = [server('alpha')];
+    h.discovered.value = [serverState('alpha', { status: 'ready', retryable: true })];
+    await mount();
+
+    // The Kilo row also reads "No tools available", so the remote row is read by its own fields.
+    expect(held.settings?.servers[0]).toMatchObject({
+      statusKey: 'modelChat.mcp.none',
+      retry: true,
+    });
+    const label = i18n.t('modelChat.mcp.retryServerA11y', { name: 'Server alpha' });
+    expect(required(buttonFor('Retry'), 'Retry').props.accessibilityLabel).toBe(label);
   });
 
   it('turns a server off for the chats and tells the registry', async () => {
