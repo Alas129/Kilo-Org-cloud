@@ -4198,6 +4198,38 @@ describe('createSessionWithLedger changed-intent rejection', () => {
         options: ORIGINAL_OPTIONS,
       }),
     },
+    {
+      // A fork cut is part of the clone intent: another cut is a conflict.
+      name: 'the clone cut',
+      original: makeRequest({
+        clone: {
+          cloneFromKiloSessionId: 'ses_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+          cloneUpToMessageId: 'msg_018f1e2d3c4bAbCdEfGhIjKlMn',
+        },
+        options: ORIGINAL_OPTIONS,
+      }),
+      retry: makeRequest({
+        clone: {
+          cloneFromKiloSessionId: 'ses_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+          cloneUpToMessageId: 'msg_018f1e2d3c4cAbCdEfGhIjKlMn',
+        },
+        options: ORIGINAL_OPTIONS,
+      }),
+    },
+    {
+      name: 'a full clone into a cut clone',
+      original: makeRequest({
+        clone: { cloneFromKiloSessionId: 'ses_aaaaaaaaaaaaaaaaaaaaaaaaaa' },
+        options: ORIGINAL_OPTIONS,
+      }),
+      retry: makeRequest({
+        clone: {
+          cloneFromKiloSessionId: 'ses_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+          cloneUpToMessageId: 'msg_018f1e2d3c4bAbCdEfGhIjKlMn',
+        },
+        options: ORIGINAL_OPTIONS,
+      }),
+    },
   ];
 
   it.each(changedIntentCases)(
@@ -4390,7 +4422,7 @@ describe('createSessionWithLedger clone allocation outcomes', () => {
       'cloud-agent',
       expect.any(String),
       'https://github.com/acme/repo',
-      SOURCE_KILO_SESSION_ID
+      { cloneFromKiloSessionId: SOURCE_KILO_SESSION_ID }
     );
     expect(
       doStub.registerSession.mock.calls.length +
@@ -4403,6 +4435,42 @@ describe('createSessionWithLedger clone allocation outcomes', () => {
     expect(result).toEqual({
       cloudAgentSessionId: CLOUD_AGENT_SESSION_ID,
       kiloSessionId: KILO_SESSION_ID,
+    });
+  });
+
+  it('forwards the clone cut into the ingest call and the stored metadata', async () => {
+    const cut = 'msg_018f1e2d3c4bAbCdEfGhIjKlMn';
+    createCliSessionMock.mockResolvedValue({
+      status: 'ready',
+      clone: { sessionId: KILO_SESSION_ID, copiedItemCount: 2 },
+    });
+    const doStub = makeDoStub();
+    const ctx = makeContext(doStub);
+
+    await runCreate(
+      ctx,
+      makeRequest({
+        initialTurn: undefined,
+        clone: { cloneFromKiloSessionId: SOURCE_KILO_SESSION_ID, cloneUpToMessageId: cut },
+        options: { operationKey: OPERATION_KEY },
+      })
+    );
+
+    expect(createCliSessionMock).toHaveBeenCalledWith(
+      KILO_SESSION_ID,
+      CLOUD_AGENT_SESSION_ID,
+      USER_ID,
+      expect.any(Object),
+      undefined,
+      undefined,
+      'cloud-agent',
+      expect.any(String),
+      'https://github.com/acme/repo',
+      { cloneFromKiloSessionId: SOURCE_KILO_SESSION_ID, cloneUpToMessageId: cut }
+    );
+    expect(createdMetadata(doStub)?.clone).toMatchObject({
+      cloneFromKiloSessionId: SOURCE_KILO_SESSION_ID,
+      cloneUpToMessageId: cut,
     });
   });
 
@@ -4995,7 +5063,7 @@ describe('createSessionWithLedger clone reconciliation', () => {
         'cloud-agent',
         expect.any(String),
         'https://github.com/acme/repo',
-        SOURCE_KILO_SESSION_ID
+        { cloneFromKiloSessionId: SOURCE_KILO_SESSION_ID }
       );
       expect(
         doStub.registerSession.mock.calls.length +
@@ -5207,7 +5275,7 @@ describe('createSessionWithLedger clone reconciliation', () => {
       'cloud-agent',
       expect.any(String),
       'https://github.com/acme/repo',
-      SOURCE_KILO_SESSION_ID
+      { cloneFromKiloSessionId: SOURCE_KILO_SESSION_ID }
     );
     expect(
       doStub.registerSession.mock.calls.length +
@@ -5320,7 +5388,7 @@ describe('createSessionWithLedger clone reconciliation', () => {
       'cloud-agent',
       expect.any(String),
       'https://github.com/acme/repo',
-      SOURCE_KILO_SESSION_ID
+      { cloneFromKiloSessionId: SOURCE_KILO_SESSION_ID }
     );
     expect(
       doStub.registerSession.mock.calls.length +
@@ -5377,7 +5445,7 @@ describe('createSessionWithLedger clone reconciliation', () => {
       'cloud-agent',
       expect.any(String),
       'https://github.com/acme/repo',
-      SOURCE_KILO_SESSION_ID
+      { cloneFromKiloSessionId: SOURCE_KILO_SESSION_ID }
     );
     expect(recordOperationProgressMock).toHaveBeenCalledWith(expect.any(Object), ROW_ID, {
       [SESSION_CREATE_TOMBSTONED_IDS_KEY]: {
@@ -5419,7 +5487,7 @@ describe('createSessionWithLedger clone reconciliation', () => {
       'cloud-agent',
       expect.any(String),
       'https://github.com/acme/repo',
-      SOURCE_KILO_SESSION_ID
+      { cloneFromKiloSessionId: SOURCE_KILO_SESSION_ID }
     );
     expect(
       doStub.registerSession.mock.calls.length +
@@ -5484,6 +5552,25 @@ describe('prepareInputToSessionCreateRequest clone mapping', () => {
 
     expect(request.clone).toEqual({ cloneFromKiloSessionId: SOURCE_SESSION_ID });
     expect(request.initialTurn).toBeUndefined();
+  });
+
+  it('maps the clone cut into the grouped clone object', () => {
+    const request = prepareInputToSessionCreateRequest({
+      mode: 'code',
+      model: 'claude-3',
+      githubRepo: 'acme/repo',
+      shallow: false,
+      devcontainer: false,
+      autoInitiate: true,
+      operationKey: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      cloneFromKiloSessionId: SOURCE_SESSION_ID,
+      cloneUpToMessageId: 'msg_018f1e2d3c4bAbCdEfGhIjKlMn',
+    });
+
+    expect(request.clone).toEqual({
+      cloneFromKiloSessionId: SOURCE_SESSION_ID,
+      cloneUpToMessageId: 'msg_018f1e2d3c4bAbCdEfGhIjKlMn',
+    });
   });
 
   it('omits clone when cloneFromKiloSessionId is absent', () => {

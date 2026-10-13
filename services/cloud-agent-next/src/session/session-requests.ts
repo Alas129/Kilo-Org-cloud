@@ -64,6 +64,8 @@ export type SessionCreateRequest = {
   savedSandboxAllocation?: SandboxAllocation | null;
   clone?: {
     cloneFromKiloSessionId: string;
+    /** Inclusive cut: copy source messages up to and including this ID. */
+    cloneUpToMessageId?: string;
   };
   profile?: {
     id?: string;

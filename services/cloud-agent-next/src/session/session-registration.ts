@@ -846,7 +846,7 @@ async function allocateNewSession(
       createdOnPlatform,
       defaultTitle,
       canonicalRepositoryUrl,
-      cloneFromKiloSessionId,
+      input.clone,
     ];
     if (worktreeId) {
       ingestArgs.push(worktreeId, { sandboxId, provider: sandboxProvider });
@@ -1136,6 +1136,9 @@ function buildSessionRegistrationCommand(
     clone: input.clone
       ? {
           cloneFromKiloSessionId: input.clone.cloneFromKiloSessionId,
+          ...(input.clone.cloneUpToMessageId
+            ? { cloneUpToMessageId: input.clone.cloneUpToMessageId }
+            : {}),
           ...(allocation.reportingCreatedAt
             ? { reportingCreatedAt: allocation.reportingCreatedAt }
             : {}),
@@ -1723,8 +1726,14 @@ export async function sessionCreateIntentFingerprint(
   return sha256Hex(
     canonicalJson({
       initialTurn,
+      // A different cut is a different intent: a same-key retry conflicts.
       clone: input.clone
-        ? { cloneFromKiloSessionId: input.clone.cloneFromKiloSessionId }
+        ? {
+            cloneFromKiloSessionId: input.clone.cloneFromKiloSessionId,
+            ...(input.clone.cloneUpToMessageId
+              ? { cloneUpToMessageId: input.clone.cloneUpToMessageId }
+              : {}),
+          }
         : undefined,
       agent: {
         mode: input.agent.mode,
@@ -2126,7 +2135,7 @@ async function resumeCloneCreate(
       createdOnPlatform,
       defaultTitle,
       canonicalRepositoryUrl,
-      cloneFromKiloSessionId
+      input.clone
     );
   } catch (error) {
     await recordPostSetupFailure(() =>
