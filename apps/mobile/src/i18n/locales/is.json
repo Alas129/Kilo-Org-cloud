@@ -3423,6 +3423,9 @@
       "downloading": "Sæki…",
       "downloadProgress": "Sæki… {{percent}}%",
       "downloadFailed": "Niðurhalinu lauk ekki. Athugaðu nettenginguna og laust geymslupláss og reyndu svo aftur."
+    },
+    "reasoningEffort": {
+      "modelFlag": "Þetta líkan styður dýpt rökhugsunar"
     }
   },
   "settingsTools": {

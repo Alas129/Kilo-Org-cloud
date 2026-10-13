@@ -3423,6 +3423,9 @@
       "downloading": "Memuat turun…",
       "downloadProgress": "Memuat turun… {{percent}}%",
       "downloadFailed": "Muat turun tidak selesai. Semak sambungan dan ruang storan kosong anda, kemudian cuba lagi."
+    },
+    "reasoningEffort": {
+      "modelFlag": "Model ini menyokong tahap pemikiran"
     }
   },
   "settingsTools": {

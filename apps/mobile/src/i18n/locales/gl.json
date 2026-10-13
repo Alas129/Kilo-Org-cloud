@@ -3423,6 +3423,9 @@
       "downloading": "Descargando…",
       "downloadProgress": "Descargando… {{percent}}%",
       "downloadFailed": "A descarga non rematou. Comproba a conexión e o espazo libre e téntao de novo."
+    },
+    "reasoningEffort": {
+      "modelFlag": "Este modelo admite esforzo de razoamento"
     }
   },
   "settingsTools": {

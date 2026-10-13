@@ -3464,6 +3464,9 @@
       "downloading": "Preuzimanje…",
       "downloadProgress": "Preuzimanje… {{percent}}%",
       "downloadFailed": "Preuzimanje nije završeno. Proverite vezu i slobodan prostor, pa pokušajte ponovo."
+    },
+    "reasoningEffort": {
+      "modelFlag": "Ovaj model podržava nivo razmišljanja"
     }
   },
   "settingsTools": {

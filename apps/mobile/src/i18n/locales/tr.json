@@ -3423,6 +3423,9 @@
       "downloading": "İndiriliyor…",
       "downloadProgress": "İndiriliyor… %{{percent}}",
       "downloadFailed": "İndirme tamamlanamadı. Bağlantınızı ve boş depolama alanınızı kontrol edip yeniden deneyin."
+    },
+    "reasoningEffort": {
+      "modelFlag": "Bu model düşünme düzeyini destekler"
     }
   },
   "settingsTools": {
