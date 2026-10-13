@@ -37,6 +37,7 @@ import { McpSettingsSheet, useMcpSettings } from './mcp-settings-sheet';
 import { BackendSettingsControl } from './backend-settings-sheet';
 import { ModelToolsHint } from './model-tools-hint';
 import { useChatMessageActions } from './use-chat-message-actions';
+import { useWebSearchSetting } from './web-search-row';
 
 /**
  * One conversation.
@@ -108,6 +109,7 @@ export function ChatScreen({ opened }: Readonly<ChatScreenProps>) {
   const [picked, setPicked] = useState<string | null>(null);
   const [variant, setVariant] = useState('');
   const model = picked ?? state.model;
+  const webSearch = useWebSearchSetting(state.sessionId, model);
   const imagesSupported = useTargetSupportsImages(model);
 
   // The attach control and the send path read image support from the gateway
@@ -326,6 +328,7 @@ export function ChatScreen({ opened }: Readonly<ChatScreenProps>) {
           setMcpOpen(false);
         }}
         settings={mcp}
+        webSearch={webSearch}
       />
       <MessageDetailsSheet {...actions.details} modelOptions={modelOptions.options} />
     </View>
