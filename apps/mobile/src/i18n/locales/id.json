@@ -3240,8 +3240,12 @@
     "list": {
       "loadFailed": "Tidak dapat memuat riwayat obrolan.",
       "new": "Obrolan baru",
-      "openHint": "Membuka obrolan. Tekan lama untuk menghapus.",
       "deleteTitle": "Hapus obrolan ini?"
+    },
+    "rename": {
+      "title": "Ganti nama obrolan",
+      "accessibility": "Ganti nama obrolan: {{title}}",
+      "openHint": "Membuka obrolan. Tekan lama untuk mengganti nama atau menghapus."
     },
     "beta": "Beta",
     "details": {

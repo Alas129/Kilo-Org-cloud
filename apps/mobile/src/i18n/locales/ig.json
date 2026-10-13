@@ -3240,8 +3240,12 @@
     "list": {
       "loadFailed": "Enweghị ike ibutu akụkọ nkata.",
       "new": "Nkata ọhụrụ",
-      "openHint": "Na-emeghe nkata ahụ. Pịgide iji hichapụ.",
       "deleteTitle": "Hichapụ nkata a?"
+    },
+    "rename": {
+      "title": "Gbanwee aha nkata",
+      "accessibility": "Gbanwee aha nkata: {{title}}",
+      "openHint": "Na-emeghe nkata ahụ. Pịgide iji gbanwee aha ma ọ bụ hichapụ."
     },
     "beta": "Beta",
     "details": {
