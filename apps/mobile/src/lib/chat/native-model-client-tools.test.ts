@@ -6,8 +6,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { backendFailureKey } from './backend-target';
 import { type NativeAvailability, nativeModelClient } from './native-model-client';
 import {
+  answered,
   answerWith,
   AVAILABLE,
+  call,
   collect,
   fakeBridge,
   request,
@@ -18,28 +20,6 @@ vi.mock('@/i18n', () => ({ i18n: { t: (key: string) => key } }));
 
 describe('native on-device model client with tools', () => {
   const TOOLS: NativeAvailability = { ...AVAILABLE, tools: true };
-  const call = { id: 'fm-call-1', name: 'time', arguments: '{}' };
-
-  /** The request the harness sends after it ran the round's calls. */
-  const answered = (results: readonly { callId: string; body: string }[]): ModelRequest => ({
-    ...request,
-    prompt: {
-      system: request.prompt.system,
-      messages: [
-        ...request.prompt.messages,
-        {
-          role: 'assistant',
-          cache: false,
-          parts: [{ kind: 'toolCall', callId: call.id, name: 'time', arguments: '{}' }],
-        },
-        {
-          role: 'user',
-          cache: true,
-          parts: results.map(result => ({ kind: 'toolResult', ...result, failed: false }) as const),
-        },
-      ],
-    },
-  });
 
   async function said(client: ModelClientService, asked = request): Promise<ModelEvent[]> {
     const result = await Effect.runPromise(Effect.either(Stream.runCollect(client.stream(asked))));
@@ -262,6 +242,43 @@ describe('native on-device model client with tools', () => {
     );
     expect(bridge.cancel).toHaveBeenCalledExactlyOnceWith(waiting);
     expect(bridge.resume).not.toHaveBeenCalled();
+    expect(bridge.generate).toHaveBeenCalledOnce();
+  });
+
+  it('does not start again when a token generation fails after the tool calls ran', async () => {
+    const { bridge, emit } = toolBridge((native, send) => {
+      send({ id: native.id, kind: 'toolCalls', calls: [call] });
+    });
+    const client = nativeModelClient(bridge);
+    await said(client);
+    bridge.resume.mockImplementation(async resumed => {
+      await Promise.resolve();
+      emit({ id: resumed, kind: 'error', reason: 'token_generation_failed' });
+    });
+    const result = await collect(
+      bridge,
+      client.stream(answered([{ callId: call.id, body: '12:00' }]))
+    );
+    expect(Either.isLeft(result) && backendFailureKey(result.left)).toBe(
+      'modelChat.localModels.failed'
+    );
+    expect(bridge.resume).toHaveBeenCalledOnce();
+    expect(bridge.generate).toHaveBeenCalledOnce();
+  });
+
+  it('ends the round on the tool calls, so a later failure of that attempt starts nothing', async () => {
+    const failsTokenGeneration = Object.assign(new Error('token_generation_failed'), {
+      code: 'token_generation_failed',
+    });
+    const { bridge } = toolBridge((native, send) => {
+      send({ id: native.id, kind: 'toolCalls', calls: [call] });
+      send({ id: native.id, kind: 'error', reason: 'token_generation_failed' });
+      throw failsTokenGeneration;
+    });
+    expect(await said(nativeModelClient(bridge))).toEqual([
+      { kind: 'toolCall', call },
+      expect.objectContaining({ kind: 'done', stop: 'tools' }),
+    ]);
     expect(bridge.generate).toHaveBeenCalledOnce();
   });
 
