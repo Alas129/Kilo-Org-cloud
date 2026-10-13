@@ -1,6 +1,6 @@
 /* eslint-disable max-lines -- every chat screen behavior shares this one mocked harness */
 /* eslint-disable typescript-eslint/no-deprecated -- the DOM-free `test-renderer` mounts React/RN trees under vitest (see src/test/render-with-providers.tsx) */
-import { createElement } from 'react';
+import { createElement, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import '@/i18n';
@@ -30,6 +30,13 @@ const state = vi.hoisted(() => ({
   model: 'm1',
   effort: null as 'low' | 'medium' | 'high' | null,
   images: false,
+  record: {
+    createdAt: 1,
+    updatedAt: 2,
+    usage: {},
+    prompted: 0,
+    effort: null,
+  },
 }));
 
 type AlertAction = { onPress?: () => void };
@@ -93,11 +100,13 @@ vi.mock('@/lib/chat/use-chat', () => ({
       waiting: [],
       failed: state.failed,
       failureKey: state.failureKey,
+      record: state.record,
     },
     send: state.send,
     stop: vi.fn(),
     retry: state.retry,
   }),
+  useChatList: () => ({ chats: [], rename: vi.fn() }),
 }));
 vi.mock('@/lib/chat/turns', () => ({
   asMessages: () => state.messages,
@@ -164,20 +173,27 @@ vi.mock('@/components/chat/mcp-settings-sheet', () => ({
   McpSettingsSheet: 'McpSettingsSheet',
   useMcpSettings: () => mcpModel,
 }));
+vi.mock('@/components/chat/chat-details-sheet', () => ({ ChatDetailsSheet: 'ChatDetailsSheet' }));
+vi.mock('@/components/agents/session-context-metrics', () => ({
+  SessionContextMetrics: 'SessionContextMetrics',
+}));
 vi.mock('@/components/chat/web-search-row', () => ({
   useWebSearchSetting: () => ({ enabled: true, setEnabled: () => undefined }),
+}));
+const keyboard = vi.hoisted(() => ({ isVisible: false }));
+vi.mock('react-native-keyboard-controller', () => ({
+  KeyboardAvoidingView: 'KeyboardAvoidingView',
+  useKeyboardState: (selector: (snapshot: { isVisible: boolean }) => boolean) => selector(keyboard),
 }));
 vi.mock('react-native', () => ({
   Alert: { alert: backendUi.alert },
   ActivityIndicator: 'ActivityIndicator',
-  Keyboard: { addListener: vi.fn(() => ({ remove: vi.fn() })) },
-  KeyboardAvoidingView: 'KeyboardAvoidingView',
   Platform: { OS: 'ios' },
   Pressable: 'Pressable',
   View: 'View',
 }));
 vi.mock('react-native-safe-area-context', () => ({
-  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+  useSafeAreaInsets: () => ({ top: 0, bottom: 24, left: 0, right: 0 }),
 }));
 
 let view: Awaited<ReturnType<typeof renderWithProviders>> | undefined = undefined;
@@ -195,6 +211,7 @@ beforeEach(() => {
   state.model = 'm1';
   state.effort = null;
   state.images = false;
+  keyboard.isVisible = false;
   state.send.mockClear();
 });
 afterEach(() => {
@@ -231,6 +248,17 @@ describe('the chat transcript while it opens', () => {
     expect(count(tree, 'SessionSkeletonMessages')).toBe(0);
   });
 
+  it.each([false, true])(
+    'keeps the composer gap correct when keyboard visibility is %s',
+    async visible => {
+      keyboard.isVisible = visible;
+      const tree = await mount();
+      const composer = tree.root.find(node => (node.type as string) === 'ChatComposer');
+
+      expect(composer.parent?.props.style).toEqual({ paddingBottom: visible ? 0 : 24 });
+    }
+  );
+
   it('hands the sheet the whole chat-tools model', async () => {
     const tree = await mount();
     const sheet = tree.root.findAll(node => (node.type as string) === 'McpSettingsSheet')[0];
@@ -252,6 +280,49 @@ describe('the chat transcript while it opens', () => {
     expect(count(tree, 'SessionMessageList')).toBe(1);
     expect(count(tree, 'EmptyState')).toBe(0);
     expect(count(tree, 'SessionSkeletonMessages')).toBe(0);
+  });
+});
+
+type Metric = ReactElement<{ onPress: () => void; info: unknown }>;
+
+function metricOf(tree: ReactTestRenderer): Metric {
+  const header = tree.root.find(node => (node.type as string) === 'ScreenHeader');
+  const right = header.props.headerRight as ReactElement<{ children: readonly Metric[] }>;
+  const [metric] = right.props.children;
+  if (metric === undefined) {
+    throw new Error('the header has no metric');
+  }
+  return metric;
+}
+
+function details(tree: ReactTestRenderer) {
+  return tree.root.find(node => (node.type as string) === 'ChatDetailsSheet').props as {
+    readonly visible: boolean;
+    readonly onClose: () => void;
+  };
+}
+
+describe('the chat details', () => {
+  it('opens from the header metric onto the chat the screen shows', async () => {
+    state.status = 'idle';
+    const tree = await mount();
+
+    expect(details(tree)).toMatchObject({ visible: false, model: 'm1', record: state.record });
+    act(() => {
+      metricOf(tree).props.onPress();
+    });
+    expect(details(tree).visible).toBe(true);
+    act(() => {
+      details(tree).onClose();
+    });
+    expect(details(tree).visible).toBe(false);
+  });
+
+  it('shows no window reading before the first answer', async () => {
+    state.status = 'idle';
+    const tree = await mount();
+
+    expect(metricOf(tree).props.info).toBeUndefined();
   });
 });
 
