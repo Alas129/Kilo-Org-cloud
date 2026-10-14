@@ -3,6 +3,7 @@ import { getSandbox, type Sandbox } from '@cloudflare/sandbox';
 import { z } from 'zod';
 import { DEFAULT_DO_RETRY_CONFIG, withTimeout } from '@kilocode/worker-utils';
 import { getBillingContext } from '@kilocode/container-usage';
+import { egressPolicySchema, type EgressMode } from '@kilocode/worker-utils/egress-allowlist';
 import type { VercelSandboxResources } from '@kilocode/worker-utils/sandbox-allocation';
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/durable-sqlite';
@@ -214,6 +215,8 @@ import { projectAllocationStatusSnapshot } from './status-snapshot.js';
 import { createSandboxNotificationDispatcher, type SandboxNotification } from './notifications.js';
 import type { SandboxStatusSnapshot } from '../../shared/sandbox-status.js';
 import { getWorktreeWorkspacePath } from '../../workspace.js';
+import { buildNativeEgressAllowlist } from '../../sandbox-control/egress-policy.js';
+import { nativeEgressAllowlistSchema } from '../../sandbox-containers/egress-policy.js';
 
 const GENERATION_KEY = 'control_plane_generation';
 const GENERATION = 2;
@@ -232,6 +235,7 @@ export type StoredProviderPin = {
   containment: CredentialContainmentRequirements | null;
   /** Stored kind of a placed key. Legacy prefixed keys have none. */
   sandboxKind?: SandboxKind;
+  egressAllowlist?: string[];
 };
 
 export type EnsureAllocationInput = {
@@ -242,6 +246,8 @@ export type EnsureAllocationInput = {
   billing?: SandboxBillingInput;
   containment?: CredentialContainmentRequirements;
   sandboxKind?: SandboxKind;
+  egressMode?: EgressMode;
+  egressAllowlist?: string[];
 };
 
 const wrapperSocketAttachmentSchema = z.object({
@@ -1544,11 +1550,26 @@ export class SandboxControlV2 extends DurableObject<Env> {
     };
   }
 
-  private pinFromInput(input: EnsureAllocationInput): StoredProviderPin {
+  private pinFromInput(
+    input: EnsureAllocationInput,
+    repositoryUrl?: string,
+    kiloToken?: string
+  ): StoredProviderPin {
+    const policy = egressPolicySchema.safeParse(input);
+    if (!policy.success) throw new ProviderCreationError('invalid_configuration');
     if (!sandboxKindMatchesKey(this.sandboxId, input.sandboxKind)) {
       throw new Error('Sandbox selection kind does not match the sandbox key');
     }
     const provider = input.provider ?? 'cloudflare';
+    if (
+      policy.data.egressMode === 'allowlist' &&
+      (provider !== 'cloudflare-containers' ||
+        (input.sandboxKind === undefined
+          ? !this.sandboxId.startsWith('ses-')
+          : input.sandboxKind !== 'isolated'))
+    ) {
+      throw new ProviderCreationError('invalid_configuration');
+    }
     return {
       provider,
       allocationName: input.allocationName ?? this.sandboxId,
@@ -1557,6 +1578,16 @@ export class SandboxControlV2 extends DurableObject<Env> {
       billing: input.billing ?? null,
       containment: input.containment ?? null,
       ...(input.sandboxKind ? { sandboxKind: input.sandboxKind } : {}),
+      ...(policy.data.egressMode !== 'allowlist'
+        ? {}
+        : {
+            egressAllowlist: buildNativeEgressAllowlist({
+              allowlist: policy.data.egressAllowlist ?? [],
+              env: this.env,
+              repositoryUrl,
+              kiloToken,
+            }),
+          }),
     };
   }
 
@@ -1739,11 +1770,46 @@ export class SandboxControlV2 extends DurableObject<Env> {
         reason: 'workspace_setup_failed',
       };
     }
+    let selectedPin: StoredProviderPin | undefined;
+    try {
+      if (
+        sandboxSelection !== undefined &&
+        (state.kind === 'stopped' ||
+          sandboxSelection.egressMode === 'allowlist' ||
+          this.providerPin?.egressAllowlist !== undefined)
+      ) {
+        const repository = source.repository;
+        selectedPin = this.pinFromInput(
+          sandboxSelection,
+          repository && repository.type !== 'github' ? repository.url : undefined,
+          source.kiloToken
+        );
+      }
+      if (
+        state.kind !== 'stopped' &&
+        (selectedPin?.egressAllowlist !== undefined ||
+          this.providerPin?.egressAllowlist !== undefined) &&
+        JSON.stringify(selectedPin?.egressAllowlist) !==
+          JSON.stringify(this.providerPin?.egressAllowlist)
+      ) {
+        throw new ProviderCreationError('invalid_configuration');
+      }
+    } catch (error) {
+      if (!(error instanceof ProviderCreationError)) throw error;
+      const attemptId = crypto.randomUUID();
+      const route = await failRoute(
+        this.routeContext(state),
+        { ...spec, attemptId },
+        attemptId,
+        'invalid_configuration'
+      );
+      return routeView(route, state.kind === 'connected');
+    }
     // H1: apply the Worker-selected provider pin before the first attempt. The
     // pin is only mutable while stopped; once an allocation exists its provider
     // is fixed and a repeated prepare must not re-decide it.
-    if (sandboxSelection !== undefined && state.kind === 'stopped') {
-      const pin = this.pinFromInput(sandboxSelection);
+    if (selectedPin !== undefined && state.kind === 'stopped') {
+      const pin = selectedPin;
       await this.writeProviderPin(pin);
       this.providerPin = pin;
       this.provider = this.createProviderAdapter(pin);
@@ -3873,6 +3939,7 @@ export class SandboxControlV2 extends DurableObject<Env> {
           logicalSandboxId: this.sandboxId,
           allocationName,
           ...(instance === undefined ? {} : { instance }),
+          ...(pin.egressAllowlist === undefined ? {} : { egressAllowlist: pin.egressAllowlist }),
           getContainer: id => this.env.SANDBOX_CONTAINERS.getByName(id),
         });
       }
@@ -3996,11 +4063,24 @@ export class SandboxControlV2 extends DurableObject<Env> {
       .where(eq(allocationTable.id, ALLOCATION_ROW_ID));
     const raw = rows[0]?.pin;
     if (typeof raw !== 'string') return null;
+    let pin: StoredProviderPin;
     try {
-      return JSON.parse(raw) as StoredProviderPin;
+      pin = JSON.parse(raw) as StoredProviderPin;
     } catch {
       return null;
     }
+    if (pin.egressAllowlist !== undefined) {
+      pin.egressAllowlist = nativeEgressAllowlistSchema.parse(pin.egressAllowlist);
+      if (
+        pin.provider !== 'cloudflare-containers' ||
+        (pin.sandboxKind === undefined
+          ? !this.sandboxId.startsWith('ses-')
+          : pin.sandboxKind !== 'isolated')
+      ) {
+        throw new ProviderCreationError('invalid_configuration');
+      }
+    }
+    return pin;
   }
 
   private async writeProviderPin(pin: StoredProviderPin): Promise<void> {
