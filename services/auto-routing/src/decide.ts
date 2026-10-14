@@ -538,6 +538,7 @@ export const decideHandler: Handler<HonoEnv> = async c => {
           deniedModelIds,
           routing.routingMode,
           {
+            preserveIncumbentVariant: true,
             constraints,
             contextTokens: payload.constraints?.promptTokensEstimate,
             capabilityMap:
