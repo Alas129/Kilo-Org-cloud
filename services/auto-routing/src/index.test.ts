@@ -1,15 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearClassifierConfigCache } from './classifier-config';
+import { clearClassifierConfigCache, getClassifierModel } from './classifier-config';
 import { clearRoutingTableCache } from './routing-table';
 import { clearModelCapabilitiesCache } from './model-capabilities';
 import type * as ModelCapabilitiesModule from './model-capabilities';
 import { clearCustomRoutingTableCache } from './decide';
+import { AutoRoutingDecisionCacheDO, clearClassificationHotCache } from './decision-cache';
+import { clearAutoRoutingSettingsCache } from './routing-mode';
+import { clearCodingPlanPreferenceCache } from './coding-plan-preference';
 import { app } from './index';
-import { ClassifierRunError } from './model-classifier';
+import { ClassifierRunError, type ClassifierRunResult } from './model-classifier';
 import type * as DbModule from '@kilocode/db';
 import type * as ModelClassifierModule from './model-classifier';
 import type { AutoRoutingMode, EfficientModelPool } from '@kilocode/auto-routing-contracts';
 import { CLASSIFIER_WINNER_KV_KEY } from '@kilocode/auto-routing-contracts';
+import { UsageRecordRequestSchema, type UsageRecordRequest } from '@kilocode/usage-contracts';
+import { writeClassifierUsage } from './classifier-usage';
 
 const classifyNormalizedInput = vi.hoisted(() => vi.fn());
 const getWorkerDb = vi.hoisted(() => vi.fn());
@@ -48,8 +53,10 @@ const configGet = vi.fn();
 const configDelete = vi.fn();
 const configPut = vi.fn();
 const analyticsTokenGet = vi.fn();
-const cacheGetEntry = vi.fn();
+const cacheReadConversationState = vi.fn();
+const cacheRecordClassifierUsage = vi.fn();
 const cachePutEntry = vi.fn();
+const cachePutStickyDecision = vi.fn();
 const cacheIdFromName = vi.fn(() => 'cache-do-id');
 const modeConfigIdFromName = vi.fn((name: string) => name);
 const modeConfigGet = vi.fn();
@@ -61,6 +68,7 @@ const env = {
   INTERNAL_API_SECRET_PROD: {
     get: async () => 'classifier-token',
   },
+  KILO_WEB_API_BASE_URL: 'https://web.example.test',
   AUTO_ROUTING_CONFIG: {
     get: configGet,
     delete: configDelete,
@@ -74,7 +82,12 @@ const env = {
   },
   AUTO_ROUTING_DECISION_CACHE: {
     idFromName: cacheIdFromName,
-    get: () => ({ getEntry: cacheGetEntry, putEntry: cachePutEntry }),
+    get: () => ({
+      readConversationState: cacheReadConversationState,
+      recordClassifierUsage: cacheRecordClassifierUsage,
+      putEntry: cachePutEntry,
+      putStickyDecision: cachePutStickyDecision,
+    }),
   },
   AUTO_ROUTING_MODE_CONFIG: {
     idFromName: modeConfigIdFromName,
@@ -181,10 +194,45 @@ function mirrorPayload(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function conversationState(classification: unknown = null, sticky: unknown = null) {
+  return {
+    classification:
+      classification === null ? null : { value: classification, storedAt: Date.now() },
+    sticky,
+  };
+}
+
+const backgroundTasks: Promise<unknown>[] = [];
+
+async function drainBackgroundTasks() {
+  while (backgroundTasks.length > 0) {
+    await Promise.all(backgroundTasks.splice(0));
+  }
+}
+
+function mockStoredConversation() {
+  const store = new Map<string, unknown>();
+  let stickyGeneration = 0;
+  cacheReadConversationState.mockImplementation(async (key: string | null) =>
+    conversationState(key === null ? null : (store.get(key) ?? null), store.get('sticky') ?? null)
+  );
+  cachePutStickyDecision.mockImplementation(async (value: unknown, writeGeneration: number) => {
+    if (writeGeneration < stickyGeneration) return;
+    stickyGeneration = writeGeneration;
+    await cachePutEntry('sticky', value);
+  });
+  cachePutEntry.mockImplementation(async (key: string, value: unknown) => {
+    store.set(key, value);
+  });
+  return store;
+}
+
 // Node-environment tests have no workers ExecutionContext; Hono accepts a
 // substitute so handler code can use c.executionCtx.waitUntil directly.
 const executionCtx = {
-  waitUntil: () => {},
+  waitUntil: (promise: Promise<unknown>) => {
+    backgroundTasks.push(promise);
+  },
   passThroughOnException: () => {},
 } as unknown as ExecutionContext;
 
@@ -212,6 +260,10 @@ describe('auto routing worker', () => {
     clearClassifierConfigCache();
     clearRoutingTableCache();
     clearModelCapabilitiesCache();
+    clearClassificationHotCache();
+    clearAutoRoutingSettingsCache();
+    clearCodingPlanPreferenceCache();
+    backgroundTasks.length = 0;
     const actualCaps =
       await vi.importActual<typeof ModelCapabilitiesModule>('./model-capabilities');
     getModelCapabilitiesMock.mockReset();
@@ -287,16 +339,38 @@ describe('auto routing worker', () => {
     });
     analyticsTokenGet.mockReset();
     analyticsTokenGet.mockResolvedValue('analytics-token');
-    cacheGetEntry.mockReset();
-    cacheGetEntry.mockResolvedValue(null);
+    cacheReadConversationState.mockReset();
+    cacheReadConversationState.mockResolvedValue(conversationState());
+    cacheRecordClassifierUsage.mockReset();
+    cacheRecordClassifierUsage.mockImplementation((usage: UsageRecordRequest) =>
+      writeClassifierUsage(env as unknown as Env, usage)
+    );
     cachePutEntry.mockReset();
     cachePutEntry.mockResolvedValue(undefined);
+    cachePutStickyDecision.mockReset();
+    cachePutStickyDecision.mockImplementation(async (value: unknown) =>
+      cachePutEntry('sticky', value)
+    );
     mockedFetch.mockReset();
+    mockedFetch.mockImplementation(async (_url, init) => {
+      const body = init?.body;
+      if (typeof body !== 'string') throw new Error('Expected serialized usage body');
+      const usage = UsageRecordRequestSchema.parse(JSON.parse(body));
+      return Response.json({
+        status: 'recorded',
+        result: {
+          usageId: usage.core.id,
+          createdAt: usage.core.created_at,
+          newMicrodollarsUsed: usage.core.cost,
+        },
+      });
+    });
     globalThis.fetch = mockedFetch;
     clearCustomRoutingTableCache();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await drainBackgroundTasks();
     globalThis.fetch = originalFetch;
     clearCustomRoutingTableCache();
     vi.restoreAllMocks();
@@ -331,7 +405,9 @@ describe('auto routing worker', () => {
             }),
           };
         });
-        if (cacheHit) cacheGetEntry.mockResolvedValueOnce(mockClassification);
+        if (cacheHit) {
+          cacheReadConversationState.mockResolvedValueOnce(conversationState(mockClassification));
+        }
 
         let finished = false;
         const pending = Promise.resolve(
@@ -342,7 +418,7 @@ describe('auto routing worker', () => {
         });
         try {
           await vi.waitFor(() => {
-            expect(cacheGetEntry).toHaveBeenCalledTimes(2);
+            expect(cacheReadConversationState).toHaveBeenCalledTimes(1);
             if (!cacheHit) expect(classifyNormalizedInput).toHaveBeenCalledTimes(1);
           });
           await new Promise<void>(resolve => setImmediate(resolve));
@@ -356,7 +432,7 @@ describe('auto routing worker', () => {
         const response = await pending;
         expect(response.status).toBe(200);
         await expect(response.json()).resolves.toMatchObject({
-          cost: cacheHit ? 0 : mockClassifierResult.cost,
+          cost: 0,
           decision: {
             model: 'google/gemini-2.5-flash-lite',
             reasoningEffort: null,
@@ -365,7 +441,7 @@ describe('auto routing worker', () => {
           },
           classifierResult: { classification: mockClassification, normalized: normalizedInput },
         });
-        expect(cacheGetEntry).toHaveBeenCalledTimes(2);
+        expect(cacheReadConversationState).toHaveBeenCalledTimes(1);
         expect(classifyNormalizedInput).toHaveBeenCalledTimes(cacheHit ? 0 : 1);
       }
     );
@@ -386,7 +462,7 @@ describe('auto routing worker', () => {
     const response = await pending;
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      cost: mockClassifierResult.cost,
+      cost: 0,
       decision: { model: 'google/gemini-2.5-flash-lite', source: 'benchmark' },
       classifierResult: { classification: mockClassification },
     });
@@ -414,7 +490,7 @@ describe('auto routing worker', () => {
         await vi.waitFor(() => expect(getModelCapabilitiesMock).toHaveBeenCalledTimes(1));
         await new Promise<void>(resolve => setImmediate(resolve));
         expect(classifyNormalizedInput).not.toHaveBeenCalled();
-        expect(cacheGetEntry).not.toHaveBeenCalled();
+        expect(cacheReadConversationState).not.toHaveBeenCalled();
       } finally {
         capabilities.resolve(
           new Map([
@@ -440,10 +516,10 @@ describe('auto routing worker', () => {
           classifierResult: null,
         });
         expect(classifyNormalizedInput).not.toHaveBeenCalled();
-        expect(cacheGetEntry).not.toHaveBeenCalled();
+        expect(cacheReadConversationState).not.toHaveBeenCalled();
       } else {
         await expect(response.json()).resolves.toMatchObject({
-          cost: mockClassifierResult.cost,
+          cost: 0,
           decision: { model: 'google/gemini-2.5-flash-lite', source: 'benchmark' },
           classifierResult: { classification: mockClassification, normalized: normalizedInput },
         });
@@ -514,10 +590,44 @@ describe('auto routing worker', () => {
       });
     });
 
+    it('waits for fresh classification when the incumbent fails the current modality constraint', async () => {
+      setVisionBenchmark();
+      setVisionCaps();
+      cacheReadConversationState.mockResolvedValue(
+        conversationState(null, {
+          model: 'text-only/chat',
+          variant: null,
+          routeKey: 'implementation/feature_development',
+        })
+      );
+      const classifier = Promise.withResolvers<ClassifierRunResult>();
+      classifyNormalizedInput.mockReturnValueOnce(classifier.promise);
+      let finished = false;
+      const pending = Promise.resolve(
+        decideRequest(mirrorPayload({ constraints: { requiredInputModalities: ['image'] } }))
+      ).then(response => {
+        finished = true;
+        return response;
+      });
+      try {
+        await vi.waitFor(() => expect(classifyNormalizedInput).toHaveBeenCalledTimes(1));
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(finished).toBe(false);
+      } finally {
+        classifier.resolve(mockClassifierResult as ClassifierRunResult);
+      }
+      const response = await pending;
+      await expect(response.json()).resolves.toMatchObject({
+        cost: 0,
+        decision: { model: 'vision/chat', sticky: false },
+        classifierResult: { classification: mockClassification },
+      });
+    });
+
     it('skips a non-vision top candidate on the cached-classification-hit path', async () => {
       setVisionBenchmark();
       setVisionCaps();
-      cacheGetEntry.mockResolvedValueOnce(mockClassification);
+      cacheReadConversationState.mockResolvedValueOnce(conversationState(mockClassification));
       const response = await decideRequest(
         mirrorPayload({ constraints: { requiredInputModalities: ['image'] } })
       );
@@ -825,7 +935,7 @@ describe('auto routing worker', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      cost: 0.00000123,
+      cost: 0,
       decision: {
         model: expect.any(String),
         taskType: 'implementation',
@@ -885,7 +995,9 @@ describe('auto routing worker', () => {
   });
 
   it('uses organization best-accuracy mode for auto routing decisions', async () => {
-    const modes = new Map<string, AutoRoutingMode | null>([['org:org-1', 'best_accuracy']]);
+    const modes = new Map<string, AutoRoutingMode | null>([
+      ['org:00000000-0000-4000-8000-000000000001', 'best_accuracy'],
+    ]);
     modeConfigGet.mockImplementation((id: string) => ({
       getMode: vi.fn(async () => modes.get(id) ?? null),
       setMode: vi.fn(async (mode: AutoRoutingMode | null) => {
@@ -931,7 +1043,11 @@ describe('auto routing worker', () => {
       };
     });
 
-    const response = await decideRequest(mirrorPayload({ organizationId: 'org-1' }));
+    const response = await decideRequest(
+      mirrorPayload({
+        organizationId: '00000000-0000-4000-8000-000000000001',
+      })
+    );
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -989,7 +1105,11 @@ describe('auto routing worker', () => {
       };
     });
 
-    const response = await decideRequest(mirrorPayload({ organizationId: 'org-1' }));
+    const response = await decideRequest(
+      mirrorPayload({
+        organizationId: '00000000-0000-4000-8000-000000000001',
+      })
+    );
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -1647,7 +1767,7 @@ describe('auto routing worker', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      cost: mockClassifierResult.cost,
+      cost: 0,
       decision: {
         model: 'google/gemini-2.5-flash-lite',
         taskType: 'implementation',
@@ -1841,7 +1961,7 @@ describe('auto routing worker', () => {
   });
 
   it('serves a cached classification for the session without calling the classifier', async () => {
-    cacheGetEntry.mockResolvedValueOnce(mockClassification);
+    cacheReadConversationState.mockResolvedValueOnce(conversationState(mockClassification));
 
     const response = await decideRequest(mirrorPayload());
 
@@ -1886,11 +2006,420 @@ describe('auto routing worker', () => {
     );
   });
 
+  it('waits for classification on the first turn', async () => {
+    const classifier = Promise.withResolvers<typeof mockClassifierResult>();
+    classifyNormalizedInput.mockReturnValueOnce(classifier.promise);
+    let finished = false;
+    const pending = Promise.resolve(decideRequest(mirrorPayload())).then(response => {
+      finished = true;
+      return response;
+    });
+    try {
+      await vi.waitFor(() => expect(classifyNormalizedInput).toHaveBeenCalledTimes(1));
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(finished).toBe(false);
+    } finally {
+      classifier.resolve(mockClassifierResult);
+    }
+    await expect((await pending).json()).resolves.toMatchObject({
+      cost: 0,
+      classifierResult: { classification: mockClassification },
+    });
+  });
+
+  it('returns the incumbent immediately, refreshes the next route, and bills background cost once', async () => {
+    mockStoredConversation();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const classifierResult = {
+      ...mockClassifierResult,
+      classifierModel: 'typesafe/jev-1.13',
+    } as ClassifierRunResult;
+    classifyNormalizedInput.mockResolvedValue(classifierResult);
+    const first = await decideRequest(mirrorPayload());
+    await expect(first.json()).resolves.toMatchObject({
+      cost: 0,
+      decision: { model: 'google/gemini-2.5-flash-lite' },
+      classifierResult: { classification: mockClassification },
+    });
+    await drainBackgroundTasks();
+
+    const backgroundClassifier = Promise.withResolvers<ClassifierRunResult>();
+    classifyNormalizedInput.mockReturnValueOnce(backgroundClassifier.promise);
+    const secondPayload = mirrorPayload({
+      input: { ...normalizedInput, userPromptPrefix: 'Design the system next.' },
+    });
+    let secondResponse: Response | undefined;
+    const second = Promise.resolve(decideRequest(secondPayload)).then(response => {
+      secondResponse = response;
+      return response;
+    });
+    try {
+      await vi.waitFor(() => expect(secondResponse).toBeDefined());
+      await expect((await second).json()).resolves.toMatchObject({
+        cost: 0,
+        decision: {
+          model: 'google/gemini-2.5-flash-lite',
+          taskType: 'implementation',
+          subtaskType: 'feature_development',
+          sticky: false,
+        },
+        classifierResult: null,
+      });
+    } finally {
+      backgroundClassifier.resolve({
+        ...classifierResult,
+        classification: {
+          ...classifierResult.classification,
+          taskType: 'planning_design',
+          subtaskType: 'system_design',
+        },
+      });
+      await second;
+      await drainBackgroundTasks();
+    }
+    const backgroundLog = logSpy.mock.calls
+      .map(([message]) => JSON.parse(String(message)))
+      .find(entry => entry.classification === 'background');
+    expect(backgroundLog).toMatchObject({
+      event: 'auto_routing_decision',
+      decidedModel: 'anthropic/claude-sonnet-4.6',
+      timings: { classifierMs: expect.any(Number), totalMs: expect.any(Number) },
+    });
+
+    const thirdClassifier = Promise.withResolvers<ClassifierRunResult>();
+    classifyNormalizedInput.mockReturnValueOnce(thirdClassifier.promise);
+    let thirdResponse: Response | undefined;
+    const third = Promise.resolve(
+      decideRequest(
+        mirrorPayload({
+          input: { ...normalizedInput, userPromptPrefix: 'Continue the system design.' },
+        })
+      )
+    ).then(response => {
+      thirdResponse = response;
+      return response;
+    });
+    try {
+      await vi.waitFor(() => expect(thirdResponse).toBeDefined());
+      await expect((await third).json()).resolves.toMatchObject({
+        cost: 0,
+        decision: {
+          model: 'anthropic/claude-sonnet-4.6',
+          taskType: 'planning_design',
+          subtaskType: 'system_design',
+          sticky: false,
+        },
+        classifierResult: null,
+      });
+    } finally {
+      thirdClassifier.resolve({ ...classifierResult, cost: 0 });
+      await third;
+      await drainBackgroundTasks();
+    }
+    await expect((await decideRequest(secondPayload)).json()).resolves.toMatchObject({
+      cost: 0,
+      decision: { model: 'anthropic/claude-sonnet-4.6' },
+      classifierResult: { classification: { taskType: 'planning_design' } },
+    });
+  });
+
+  it.each(['sync', 'background', 'billed-failure'] as const)(
+    'posts one classifier usage event on the %s path without another session turn',
+    async path => {
+      const store = mockStoredConversation();
+      if (path === 'background') {
+        store.set('sticky', {
+          model: 'google/gemini-2.5-flash-lite',
+          variant: null,
+          routeKey: 'implementation/feature_development',
+        });
+      }
+      if (path === 'billed-failure') {
+        classifyNormalizedInput.mockRejectedValueOnce(
+          new ClassifierRunError('Invalid classification', {
+            cost: mockClassifierResult.cost,
+            classifierModel: mockClassifierResult.classifierModel,
+            failureStage: 'invalid_response',
+          })
+        );
+      }
+      const response = await decideRequest(mirrorPayload());
+      await expect(response.json()).resolves.toMatchObject({ cost: 0 });
+      await drainBackgroundTasks();
+      expect(classifyNormalizedInput).toHaveBeenCalledTimes(1);
+      expect(cacheRecordClassifierUsage).toHaveBeenCalledTimes(1);
+      expect(mockedFetch).toHaveBeenCalledTimes(1);
+      const usage = cacheRecordClassifierUsage.mock.calls[0]?.[0];
+      expect(UsageRecordRequestSchema.parse(usage)).toMatchObject({
+        core: {
+          id: expect.any(String),
+          kilo_user_id: 'user-1',
+          model: 'auto-routing/classifier',
+          cost: Math.round(mockClassifierResult.cost * 1_000_000),
+        },
+        posthog_distinct_id: null,
+      });
+      const body = mockedFetch.mock.calls[0]?.[1]?.body;
+      if (typeof body !== 'string') throw new Error('Expected serialized usage body');
+      expect(JSON.parse(body)).toEqual(usage);
+      expect(mockedFetch.mock.calls[0]?.[1]?.headers).toMatchObject({
+        'x-internal-api-key': 'classifier-token',
+      });
+    }
+  );
+
+  it('preserves one usage id per sync and background call through actual DO alarm retries', async () => {
+    const entries = new Map<string, unknown>();
+    let alarm: number | null = null;
+    let now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const storage = {
+      get: async (key: string | string[]) =>
+        Array.isArray(key)
+          ? new Map(key.filter(item => entries.has(item)).map(item => [item, entries.get(item)]))
+          : entries.get(key),
+      put: async (key: string, value: unknown) => {
+        entries.set(key, value);
+      },
+      delete: async (keys: string | string[]) => {
+        for (const key of Array.isArray(keys) ? keys : [keys]) entries.delete(key);
+      },
+      list: async () => new Map(entries),
+      getAlarm: async () => alarm,
+      setAlarm: async (time: number) => {
+        alarm = time;
+      },
+    };
+    const cacheDO = new AutoRoutingDecisionCacheDO(
+      { storage } as unknown as DurableObjectState,
+      env as unknown as Env
+    );
+    cacheReadConversationState.mockImplementation((key: string) =>
+      cacheDO.readConversationState(key)
+    );
+    cachePutEntry.mockImplementation(
+      (key: string, value: Parameters<AutoRoutingDecisionCacheDO['putEntry']>[1]) =>
+        cacheDO.putEntry(key, value)
+    );
+    cachePutStickyDecision.mockImplementation(
+      (value: Parameters<AutoRoutingDecisionCacheDO['putStickyDecision']>[0], generation: number) =>
+        cacheDO.putStickyDecision(value, generation)
+    );
+    cacheRecordClassifierUsage.mockImplementation((usage: UsageRecordRequest) =>
+      cacheDO.recordClassifierUsage(usage)
+    );
+
+    const deliveries: UsageRecordRequest[] = [];
+    const attempts = new Map<string, number>();
+    mockedFetch.mockImplementation(async (_url, init) => {
+      const body = init?.body;
+      if (typeof body !== 'string') throw new Error('Expected serialized usage body');
+      const usage = UsageRecordRequestSchema.parse(JSON.parse(body));
+      deliveries.push(usage);
+      const attempt = (attempts.get(usage.core.id) ?? 0) + 1;
+      attempts.set(usage.core.id, attempt);
+      if (attempt === 1) return new Response(null, { status: 503 });
+      return Response.json({
+        status: 'recorded',
+        result: {
+          usageId: usage.core.id,
+          createdAt: usage.core.created_at,
+          newMicrodollarsUsed: usage.core.cost,
+        },
+      });
+    });
+    const runAlarm = async () => {
+      if (alarm === null) throw new Error('Expected a usage retry alarm');
+      now = alarm;
+      alarm = null;
+      await cacheDO.alarm();
+    };
+    const classifierModel = await getClassifierModel(env as unknown as Env);
+    classifyNormalizedInput.mockResolvedValueOnce({
+      ...mockClassifierResult,
+      classifierModel,
+      cost: 0.000013,
+    });
+    const sync = await decideRequest(mirrorPayload());
+    await expect(sync.json()).resolves.toMatchObject({ cost: 0 });
+    await drainBackgroundTasks();
+    expect(deliveries).toHaveLength(1);
+    expect([...entries.keys()].filter(key => key.startsWith('usage:'))).toHaveLength(1);
+    await runAlarm();
+    expect(deliveries).toHaveLength(2);
+    expect(deliveries[1]).toEqual(deliveries[0]);
+    expect([...entries.keys()].filter(key => key.startsWith('usage:'))).toHaveLength(0);
+
+    classifyNormalizedInput.mockResolvedValueOnce({
+      ...mockClassifierResult,
+      classifierModel,
+      cost: 0.000029,
+    });
+    const nextTurn = mirrorPayload({
+      input: { ...normalizedInput, userPromptPrefix: 'A different session turn' },
+    });
+    const background = await decideRequest(nextTurn);
+    await expect(background.json()).resolves.toMatchObject({ cost: 0, classifierResult: null });
+    await drainBackgroundTasks();
+    expect(deliveries).toHaveLength(3);
+    await runAlarm();
+    expect(deliveries).toHaveLength(4);
+    expect(deliveries[3]).toEqual(deliveries[2]);
+    expect([...entries.keys()].filter(key => key.startsWith('usage:'))).toHaveLength(0);
+
+    const repeated = await decideRequest(nextTurn);
+    await expect(repeated.json()).resolves.toMatchObject({
+      cost: 0,
+      classifierResult: { classification: mockClassification },
+    });
+    await drainBackgroundTasks();
+    expect(classifyNormalizedInput).toHaveBeenCalledTimes(2);
+    expect(cacheRecordClassifierUsage).toHaveBeenCalledTimes(2);
+    expect(deliveries).toHaveLength(4);
+    expect(attempts.size).toBe(2);
+    expect([...attempts.values()]).toEqual([2, 2]);
+    for (const cost of [13, 29]) {
+      const ids = new Set(
+        deliveries.filter(usage => usage.core.cost === cost).map(usage => usage.core.id)
+      );
+      expect(ids.size).toBe(1);
+    }
+  });
+
+  it('keeps in-flight classification in waitUntil and bills without consuming the decide response', async () => {
+    const classifier = Promise.withResolvers<ClassifierRunResult>();
+    classifyNormalizedInput.mockReturnValueOnce(classifier.promise);
+    const pending = decideRequest(mirrorPayload());
+    try {
+      await vi.waitFor(() => expect(classifyNormalizedInput).toHaveBeenCalledTimes(1));
+      expect(backgroundTasks.length).toBeGreaterThan(0);
+    } finally {
+      classifier.resolve(mockClassifierResult as ClassifierRunResult);
+      await pending;
+      await drainBackgroundTasks();
+    }
+    expect(cacheRecordClassifierUsage).toHaveBeenCalledTimes(1);
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the sticky route unchanged when background classification fails without usage', async () => {
+    const store = mockStoredConversation();
+    const sticky = {
+      model: 'google/gemini-2.5-flash-lite',
+      variant: null,
+      routeKey: 'implementation/feature_development',
+    };
+    store.set('sticky', sticky);
+    classifyNormalizedInput.mockRejectedValue(new Error('classifier unavailable'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const response = await decideRequest(mirrorPayload());
+    await expect(response.json()).resolves.toMatchObject({
+      cost: 0,
+      decision: { model: sticky.model },
+      classifierResult: null,
+    });
+    await drainBackgroundTasks();
+    expect(store.get('sticky')).toEqual(sticky);
+    await expect((await decideRequest(mirrorPayload())).json()).resolves.toMatchObject({
+      cost: 0,
+      decision: { model: sticky.model },
+      classifierResult: null,
+    });
+    await drainBackgroundTasks();
+    expect(cacheRecordClassifierUsage).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"event":"auto_routing_background_classify_failed"')
+    );
+  });
+
+  it('bills a paid background failure immediately and never bills it on a later turn', async () => {
+    const store = mockStoredConversation();
+    store.set('sticky', {
+      model: 'google/gemini-2.5-flash-lite',
+      variant: null,
+      routeKey: 'implementation/feature_development',
+    });
+    const cost = 0.03;
+    classifyNormalizedInput.mockRejectedValueOnce(
+      new ClassifierRunError('Invalid classification', {
+        cost,
+        classifierModel: mockClassifierResult.classifierModel,
+        failureStage: 'invalid_response',
+      })
+    );
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect((await decideRequest(mirrorPayload())).json()).resolves.toMatchObject({ cost: 0 });
+    await drainBackgroundTasks();
+    expect(cacheRecordClassifierUsage).toHaveBeenCalledTimes(1);
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+    classifyNormalizedInput.mockRejectedValue(new Error('unbilled failure'));
+    await expect((await decideRequest(mirrorPayload())).json()).resolves.toMatchObject({ cost: 0 });
+    await drainBackgroundTasks();
+    await expect((await decideRequest(mirrorPayload())).json()).resolves.toMatchObject({ cost: 0 });
+    await drainBackgroundTasks();
+    expect(cacheRecordClassifierUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])(
+    'orders background sticky writes by request start time (equal timestamps: %s)',
+    async equalTimestamps => {
+      const olderStartedAt = Date.now();
+      const now = vi.spyOn(Date, 'now').mockReturnValue(olderStartedAt);
+      const store = mockStoredConversation();
+      store.set('sticky', {
+        model: 'google/gemini-2.5-flash-lite',
+        variant: null,
+        routeKey: 'implementation/feature_development',
+      });
+      const older = Promise.withResolvers<ClassifierRunResult>();
+      classifyNormalizedInput.mockReturnValueOnce(older.promise);
+      await decideRequest(
+        mirrorPayload({
+          input: { ...normalizedInput, userPromptPrefix: 'Turn A' },
+        })
+      );
+      const olderTasks = backgroundTasks.splice(0);
+      classifyNormalizedInput.mockResolvedValueOnce({
+        ...mockClassifierResult,
+        classification: {
+          ...mockClassification,
+          taskType: 'planning_design',
+          subtaskType: 'system_design',
+        },
+      });
+      now.mockReturnValue(olderStartedAt + (equalTimestamps ? 0 : 1));
+      await decideRequest(
+        mirrorPayload({
+          input: { ...normalizedInput, userPromptPrefix: 'Turn B' },
+        })
+      );
+      await drainBackgroundTasks();
+      const newerSticky = store.get('sticky');
+      expect(newerSticky).toMatchObject({ routeKey: 'planning_design/system_design' });
+      older.resolve(mockClassifierResult as ClassifierRunResult);
+      await Promise.all(olderTasks);
+      if (equalTimestamps) {
+        expect(store.get('sticky')).toMatchObject({
+          routeKey: 'implementation/feature_development',
+        });
+      } else {
+        expect(store.get('sticky')).toEqual(newerSticky);
+      }
+      expect(cachePutStickyDecision.mock.calls.map(([, generation]) => generation)).toEqual([
+        olderStartedAt + (equalTimestamps ? 0 : 1),
+        olderStartedAt,
+      ]);
+      await drainBackgroundTasks();
+      expect(cacheRecordClassifierUsage).toHaveBeenCalledTimes(2);
+    }
+  );
+
   it('keeps the session on the incumbent model when the taxonomy route changes', async () => {
-    // Back the mocked DO stub with real storage so the sticky model written
-    // by the first request is visible to the second.
     const store = new Map<string, unknown>();
-    cacheGetEntry.mockImplementation(async (key: string) => store.get(key) ?? null);
+    cacheReadConversationState.mockImplementation(async (key: string) =>
+      conversationState(store.get(key) ?? null, store.get('sticky') ?? null)
+    );
     cachePutEntry.mockImplementation(async (key: string, value: unknown) => {
       store.set(key, value);
     });
@@ -1939,9 +2468,8 @@ describe('auto routing worker', () => {
     // 0.99 >= the 0.01 default sample rate: a routine decision would be
     // dropped, but a real switch must always be observed.
     vi.spyOn(Math, 'random').mockReturnValue(0.99);
-    // Incumbent off the current route: the decision switches away from it.
-    cacheGetEntry.mockImplementation(async (key: string) =>
-      key === 'sticky' ? { model: 'gone/model', routeKey: 'planning_design/system_design' } : null
+    cacheReadConversationState.mockResolvedValue(
+      conversationState(null, { model: 'gone/model', routeKey: 'planning_design/system_design' })
     );
 
     const response = await decideRequest(mirrorPayload());
@@ -1972,9 +2500,7 @@ describe('auto routing worker', () => {
   it('leaves routeChanged unknown for sticky entries written before routeKey existed', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(Math, 'random').mockReturnValue(0.99);
-    cacheGetEntry.mockImplementation(async (key: string) =>
-      key === 'sticky' ? { model: 'gone/model' } : null
-    );
+    cacheReadConversationState.mockResolvedValue(conversationState(null, { model: 'gone/model' }));
 
     const response = await decideRequest(mirrorPayload());
 
@@ -2027,7 +2553,7 @@ describe('auto routing worker', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      cost: 0.00000123,
+      cost: 0,
       decision: null,
       classifierResult: { classification: mockClassification },
     });
@@ -2069,7 +2595,7 @@ describe('auto routing worker', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      cost: 0.00000123,
+      cost: 0,
       decision: null,
       classifierResult: null,
     });
