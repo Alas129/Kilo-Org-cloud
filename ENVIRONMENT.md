@@ -16,12 +16,12 @@ This document lists all environment variables used in the Kilo Code cloud monore
 
 ## App (apps/web)
 
-Manage shared web env var additions and rotations with `pnpm web:env set <VARIABLE>`. The helper coordinates tracked root and `apps/web` dotenv defaults, the `kilocode-app`, `kilocode-global-app`, and `kilocode-ai-gateway` Vercel deployments, and 1Password storage for sensitive Production values. `pnpm web:env copy` fills a new project from an existing one. See `DEVELOPMENT.md` for the full workflow.
+Manage shared web env var additions and rotations with `pnpm web:env set <VARIABLE>`. The helper coordinates tracked root and `apps/web` dotenv defaults, the `kilocode-app`, `kilocode-global-app` (being phased out; no traffic is deliberately routed to it), and `kilocode-ai-gateway` Vercel deployments, and 1Password storage for sensitive Production values. `pnpm web:env copy` fills a new project from an existing one. See `DEVELOPMENT.md` for the full workflow.
 
 ### Configuration & Constant URLs
 
 - `APP_URL_OVERRIDE` - Optional base application URL override in any environment; used in `packages/web-shared/src/lib/constants.ts` and `next.config.mjs`. When unset, Vercel's `staging` target uses `https://staging-app.kilo.ai`, production uses `https://app.kilo.ai`, and local development uses `PORT`. [SERVER]
-- `AI_GATEWAY_URL` - Optional origin of the `apps/ai-gateway` app that `apps/web` rewrites its AI gateway routes to; read at build time in `apps/web/ai-gateway-rewrites.mjs`. When unset, Vercel's `production` target uses `https://ai-gateway.kilo.ai`, its `staging` target uses `https://staging-ai-gateway.kilo.ai`, and other environments serve the routes from `apps/web` itself. `pnpm dev:start` sets it to the local ai-gateway app. [SERVER]
+- `AI_GATEWAY_URL` - Optional origin of the `apps/ai-gateway` app that `apps/web` rewrites its AI gateway routes to; read at build time in `apps/web/ai-gateway-rewrites.mjs`. When unset, Vercel's `production` target uses `https://ai-gateway.kilo.ai`, its `staging` target uses `https://staging-ai-gateway.kilo.ai`, other Vercel targets fail the build, and outside Vercel it defaults to `http://localhost:<3010 + KILO_PORT_OFFSET>`. `apps/web` has no gateway routes of its own. `pnpm dev:start` sets it to the local ai-gateway app. [SERVER]
 - `KILOCLAW_INSTANCE_URL_TEMPLATE` - URL template for KiloClaw instances; used in `packages/web-shared/src/lib/config.server.ts`. [SERVER]
 - `NEXTAUTH_URL` - Base URL for NextAuth.js; used across many auth-related files. [SERVER]
 - `NEXTAUTH_SECRET` - Secret key for NextAuth.js session encryption and five-minute, audience-bound user assertions verified by internal Workers such as user data export. `[SECRET]`
@@ -210,7 +210,6 @@ The connection-role migration preserves a sole eligible connection, prefers an u
 
 ### Ablation / Experimentation
 
-- `GLOBAL_KILO_BACKEND` - Marks the `kilocode-global-app` deployment, which serves `/api/exa` and `/api/marketplace` itself instead of rewriting them to `global-api.kilo.ai`; used in `next.config.mjs`. [SERVER]
 - `ANALYZE` - Next.js bundle analyzer switch; enables `@next/bundle-analyzer` in `next.config.mjs`. [SERVER]
 
 ### Database
@@ -456,6 +455,8 @@ The key is team-scoped for all topics and valid in both the sandbox and producti
 - `SANDBOX_SELECTION_IDS` - Comma-separated user or org IDs allowed to pick a Cloud Agent sandbox destination on the new-session page. Empty admits nobody. `*` includes personal accounts. Production `wrangler.jsonc` sets the allowlist, so a deploy overwrites the Cloudflare dashboard value. Wrangler `dev` and `.dev.vars.example` default to `*`. [SERVER]
 - `VERCEL_SANDBOX_ORG_IDS` - Comma-separated org IDs routed to Vercel sandboxes. Empty is off. `*` includes personal accounts. [SERVER]
 - `CLOUDFLARE_CONTAINERS_ORG_IDS` - Comma-separated org IDs enrolled for the DO-managed Cloudflare Containers runtime, which is also the default sandbox destination for isolated control-plane sessions. Empty is off. `*` includes every organization and personal account. Production `wrangler.jsonc` sets `*` so a deploy overwrites the Cloudflare dashboard value; wrangler `dev` also sets `*`. [SERVER]
+- `PREVIEW_HOST_SUFFIX` - Hostname suffix the Cloud Agent Next Worker dispatches preview hosts under; a preview host is `p<port>-<workspace-uuid-hex>.<suffix>`. Unset or empty disables preview dispatch and the `/preview/open` hop, and the web app hides the preview button (it reads availability from the Worker's `getPreviewOptions`). The web app needs no preview setting. `services/cloud-agent-next/.dev.vars.example` sets `localhost`. [SERVER]
+- `PREVIEW_ENABLED_IDS` - Comma-separated user or org IDs that the Cloud Agent Next Worker shows the preview button and preview links to. `*` includes personal accounts. Unset or empty shows nobody. A UI gate only: `getPreviewOptions` answers `enabled: false` for other owners, but the `/preview/open` hop and the preview host do not check it. The org ID comes from the web route and is not verified. Production `wrangler.jsonc` sets the allowlist to `2bbc9955-5dc2-428c-a353-be59d89a8130`, so a deploy overwrites the Cloudflare dashboard value. Wrangler `dev` and `.dev.vars.example` default to `*`. [SERVER]
 - `HOME` - Reserved in `RESERVED_ENV_VARS` for cloud-agent-next session home management. [SYSTEM]
 
 ### Gastown
