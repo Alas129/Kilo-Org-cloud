@@ -8,6 +8,7 @@ import type {
 } from '@kilocode/auto-routing-contracts';
 import { RoutingTableSchema, TAXONOMY_ROUTE_KEYS } from '@kilocode/auto-routing-contracts';
 import {
+  buildCustomRoutingTable,
   buildEffortByComplexity,
   buildRoutingTable,
   computeRegistryRoutingTableVersion,
@@ -97,6 +98,78 @@ describe('buildEffortByComplexity', () => {
       [route]: { 'model/shared': { low: 'low', medium: 'low', high: 'high' } },
     });
   });
+
+  it.each([
+    { accuracyNoiseBand: undefined, expectedVariant: 'low' },
+    { accuracyNoiseBand: 0.05, expectedVariant: 'low' },
+    { accuracyNoiseBand: 0.01, expectedVariant: 'high' },
+  ])(
+    'uses noise band $accuracyNoiseBand consistently for route and complexity rankings',
+    ({ accuracyNoiseBand, expectedVariant }) => {
+      const minAccuracy = 0.99;
+      const measured = pairs().map(pair => ({
+        ...pair,
+        results: pair.results.map(result => ({
+          ...result,
+          score: pair.variant === 'low' ? 0.97 : 1,
+          costUsd: pair.variant === 'low' ? 0.01 : 1,
+        })),
+      }));
+      const summaries = TAXONOMY_ROUTE_KEYS.flatMap(routeKey =>
+        ['low', 'high'].map(variant => ({
+          ...summary(
+            'model/shared',
+            routeKey,
+            variant === 'low' ? 0.97 : 1,
+            variant === 'low' ? 0.01 : 1
+          ),
+          variant,
+        }))
+      );
+      const params = {
+        generatedAt: '2026-01-01T00:00:00.000Z',
+        minAccuracy,
+        accuracyNoiseBand,
+        switchCostFactor: 3,
+        bestAccuracySwitchThreshold: 0.05,
+        summaries,
+        perCaseResults: measured,
+        complexityLabels: labels,
+      };
+      const platform = buildRoutingTable({
+        ...params,
+        version: 'noise-band',
+        deciderModels: ['low', 'high'].map(variant => ({
+          id: 'model/shared',
+          variant,
+          reasoningEffort: null,
+        })),
+      });
+      const custom = buildCustomRoutingTable({
+        ...params,
+        readyEntries: ['low', 'high'].map(variant => ({
+          entry: { model: 'model/shared', variant },
+          runId: 'noise-band',
+        })),
+        summaries: summaries.map(value => ({ ...value, runId: 'noise-band' })),
+      });
+      for (const table of [platform, custom]) {
+        expect(table?.routes[route]?.[0]?.variant).toBe(expectedVariant);
+        expect(table?.effortByComplexity?.[route]?.['model/shared']?.low).toBe(expectedVariant);
+        expect(table?.effortByComplexity?.[route]?.['model/shared']?.high).toBe(expectedVariant);
+      }
+      expect(
+        buildEffortByComplexity(
+          platform.routes,
+          measured,
+          labels,
+          minAccuracy,
+          null,
+          accuracyNoiseBand
+        )[route]
+      ).toEqual(platform.effortByComplexity?.[route]);
+    }
+  );
 
   it('uses the route-level variant for sparse and absent buckets', () => {
     const mapping = buildEffortByComplexity(routes, pairs(MIN_COMPLEXITY_CASES - 1), labels, 0.9);
@@ -227,8 +300,31 @@ describe('buildEffortByComplexity', () => {
     expect(built.effortByComplexity?.[route]?.['model/shared']?.high).toBe('high');
   });
 });
-
 describe('production-cost table version', () => {
+  it('isolates router, dataset identity and ranking configuration in the version hash', () => {
+    const contributors = [{ runId: 'run', model: 'model', variant: 'high' }];
+    const knobs = { minAccuracy: 0.9, switchCostFactor: 3, bestAccuracySwitchThreshold: 0.05 };
+    const efficient = computeRegistryRoutingTableVersion(contributors, knobs);
+    expect(
+      computeRegistryRoutingTableVersion(contributors, {
+        ...knobs,
+        router: 'efficient',
+        accuracyNoiseBand: 0.05,
+        frontierMinAccuracyDelta: 0,
+      })
+    ).toBe(efficient);
+    for (const changed of [
+      { router: 'frontier' as const },
+      { engineIdentity: 'frontier:v1:dataset' },
+      { accuracyNoiseBand: 0.01 },
+      { frontierMinAccuracyDelta: 0.1 },
+    ]) {
+      expect(computeRegistryRoutingTableVersion(contributors, { ...knobs, ...changed })).not.toBe(
+        efficient
+      );
+    }
+  });
+
   it('includes first-token measurements in the version independent of summary order', () => {
     const contributors = [{ runId: 'synthetic-run', model: 'model/cheap', variant: null }];
     const knobs = { minAccuracy: 0.9, switchCostFactor: 3, bestAccuracySwitchThreshold: 0.05 };
@@ -250,7 +346,6 @@ describe('production-cost table version', () => {
       })
     ).not.toBe(base);
   });
-
   it('republishes when the profile, horizon or model prices change', () => {
     const contributors = [{ runId: 'synthetic-run', model: 'synthetic/model', variant: null }];
     const knobs = { minAccuracy: 0.9, switchCostFactor: 3, bestAccuracySwitchThreshold: 0.05 };

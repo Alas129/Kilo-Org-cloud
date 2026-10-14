@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  BenchmarkRegistryResponseSchema,
   DEFAULT_BENCHMARK_ORG_ID,
   DEFAULT_BENCHMARK_USER_ID,
   type BenchmarkConfig,
@@ -11,6 +12,9 @@ import type * as ProfilesModule from './profiles';
 import { CLASSIFIER_CASES } from './datasets/classifier-cases';
 
 const TEST_CONFIG: BenchmarkConfig = {
+  router: 'efficient',
+  accuracyNoiseBand: 0.05,
+  frontierMinAccuracyDelta: 0,
   classifierModels: ['google/gemini-2.5-flash-lite', 'google/gemini-2.5-flash'],
   deciderModels: [{ id: 'google/gemini-2.5-flash-lite' }, { id: 'anthropic/claude-sonnet-4.6' }],
   minAccuracy: 0.7,
@@ -19,8 +23,8 @@ const TEST_CONFIG: BenchmarkConfig = {
   productionTokenProfile: null,
   switchHorizonTurns: null,
   lowConfidenceThreshold: null,
-  maxConcurrency: 100,
-  userMaxConcurrency: 100,
+  maxConcurrency: 40,
+  userMaxConcurrency: 40,
   benchmarkUserId: null,
   benchmarkOrgId: null,
   classifierRepetitions: 1,
@@ -36,6 +40,9 @@ const TEST_CONFIG: BenchmarkConfig = {
 const TEST_CONFIG_ROWS = {
   config: {
     id: 1 as const,
+    router: 'efficient' as const,
+    accuracy_noise_band: 0.05,
+    frontier_min_accuracy_delta: 0,
     min_accuracy: TEST_CONFIG.minAccuracy,
     switch_cost_factor: TEST_CONFIG.switchCostFactor,
     best_accuracy_switch_threshold: TEST_CONFIG.bestAccuracySwitchThreshold,
@@ -248,6 +255,9 @@ describe('GET /admin/config', () => {
     vi.mocked(getConfigRows).mockResolvedValueOnce({
       config: {
         id: 1,
+        router: 'efficient',
+        accuracy_noise_band: TEST_CONFIG.accuracyNoiseBand,
+        frontier_min_accuracy_delta: TEST_CONFIG.frontierMinAccuracyDelta,
         min_accuracy: 0.9,
         switch_cost_factor: 3,
         best_accuracy_switch_threshold: 0.05,
@@ -410,6 +420,9 @@ describe('POST /admin/runs', () => {
     vi.mocked(getRunningRun).mockResolvedValue({
       id: 'classifier-2026-06-15T00-00-00-000Z',
       kind: 'classifier',
+      router: 'efficient',
+      accuracy_noise_band: 0.05,
+      frontier_min_accuracy_delta: 0,
       status: 'running',
       started_at: '2026-06-15T00:00:00.000Z',
       completed_at: null,
@@ -597,7 +610,7 @@ describe('POST /admin/runs', () => {
     // The platform budget fits one entry per repetition; the user budget does
     // not. Hiding the user queue's failure behind the platform run would leave
     // its pending work looking like an empty queue.
-    vi.mocked(getConfigRows).mockResolvedValue({
+    const configRows = {
       ...TEST_CONFIG_ROWS,
       config: {
         ...TEST_CONFIG_ROWS.config,
@@ -605,7 +618,10 @@ describe('POST /admin/runs', () => {
         user_max_concurrency: 4,
         decider_repetitions: 5,
       },
-    });
+    };
+    vi.mocked(getConfigRows).mockImplementation(async (_db, router) =>
+      router === 'frontier' ? { ...TEST_CONFIG_ROWS, config: null } : configRows
+    );
     vi.mocked(listPendingCurrentProfiles).mockResolvedValue([
       { model: 'm/1', variant: '', requested_at: '2026-06-01T00:00:00.000Z' },
     ]);
@@ -624,6 +640,32 @@ describe('POST /admin/runs', () => {
 });
 
 describe('GET /admin/registry', () => {
+  it.each([
+    { query: '', router: 'efficient' as const },
+    { query: '?router=efficient', router: 'efficient' as const },
+    { query: '?router=frontier', router: 'frontier' as const },
+  ])('emits $router for registry request "$query"', async ({ query, router }) => {
+    vi.mocked(getConfigRows).mockResolvedValue({
+      ...TEST_CONFIG_ROWS,
+      config: { ...TEST_CONFIG_ROWS.config, router },
+    });
+
+    const response = await authedGet(`/admin/registry${query}`);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({
+      router,
+      engineIdentity: expect.any(String),
+      repetitions: TEST_CONFIG.deciderRepetitions,
+      platform: { pending: 0, running: 0, ready: 0, failed: 0 },
+      user: { pending: 0, running: 0, ready: 0, failed: 0 },
+      platformEntries: [],
+    });
+    expect(BenchmarkRegistryResponseSchema.parse(body).router).toBe(router);
+    expect(getConfigRows).toHaveBeenCalledWith(env.BENCH_DB, router);
+  });
+
   it('exposes exact current platform-pair coverage separately from aggregate queue counts', async () => {
     vi.mocked(getConfigRows).mockResolvedValue(TEST_CONFIG_ROWS);
     const platformEntries = [
@@ -635,6 +677,7 @@ describe('GET /admin/registry', () => {
     const response = await authedGet('/admin/registry');
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
+      router: 'efficient',
       repetitions: TEST_CONFIG.deciderRepetitions,
       platformEntries,
     });
@@ -806,5 +849,136 @@ describe('POST /admin/profiles/status', () => {
     await expect(res.json()).resolves.toEqual({
       statuses: [{ entry: { model: 'a/b', variant: null }, status: 'ready', failureReason: null }],
     });
+  });
+});
+
+describe('router selection', () => {
+  it('saves frontier config using query router and its independent thresholds', async () => {
+    const response = await authedPut('/admin/config?router=frontier', {
+      ...TEST_CONFIG,
+      accuracyNoiseBand: 0.03,
+      frontierMinAccuracyDelta: 0.02,
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      config: { router: 'frontier', accuracyNoiseBand: 0.03, frontierMinAccuracyDelta: 0.02 },
+    });
+    expect(replaceConfig).toHaveBeenCalledWith(
+      env.BENCH_DB,
+      expect.objectContaining({
+        accuracy_noise_band: 0.03,
+        frontier_min_accuracy_delta: 0.02,
+      }),
+      expect.any(Array),
+      expect.any(Array),
+      expect.any(Array),
+      'frontier'
+    );
+  });
+
+  it('keeps classifier starts on the shared efficient benchmark identity', async () => {
+    vi.mocked(getConfigRows).mockResolvedValue(TEST_CONFIG_ROWS);
+    const response = await authedPost('/admin/runs?router=frontier', { kind: 'classifier' });
+    expect(response.status).toBe(200);
+    expect(getConfigRows).toHaveBeenCalledWith(env.BENCH_DB, 'efficient');
+    expect(insertRun).toHaveBeenCalledWith(
+      env.BENCH_DB,
+      expect.objectContaining({
+        kind: 'classifier',
+        router: 'efficient',
+        benchmark_user_id: DEFAULT_BENCHMARK_USER_ID,
+        benchmark_org_id: DEFAULT_BENCHMARK_ORG_ID,
+      }),
+      expect.any(Array),
+      expect.any(Array)
+    );
+  });
+
+  it('defaults config and table reads to efficient', async () => {
+    await authedGet('/admin/config');
+    await authedGet('/admin/routing-table');
+    expect(getConfigRows).toHaveBeenCalledWith(env.BENCH_DB, 'efficient');
+    expect(getLatestRoutingTable).toHaveBeenCalledWith(env.BENCH_DB, 'efficient');
+  });
+
+  it('selects frontier config, runs and table independently', async () => {
+    vi.mocked(getConfigRows).mockResolvedValue({
+      ...TEST_CONFIG_ROWS,
+      config: { ...TEST_CONFIG_ROWS.config, router: 'frontier' },
+    });
+    const response = await authedGet('/admin/config?router=frontier');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      config: { router: 'frontier', accuracyNoiseBand: 0.05, frontierMinAccuracyDelta: 0 },
+    });
+    await authedGet('/admin/runs?router=frontier');
+    await authedGet('/admin/routing-table?router=frontier');
+    expect(getConfigRows).toHaveBeenCalledWith(env.BENCH_DB, 'frontier');
+    expect(listRuns).toHaveBeenCalledWith(
+      env.BENCH_DB,
+      20,
+      expect.objectContaining({ router: 'frontier' })
+    );
+    expect(getLatestRoutingTable).toHaveBeenCalledWith(env.BENCH_DB, 'frontier');
+  });
+
+  it('rejects invalid routers and frontier owner profiles', async () => {
+    expect((await authedGet('/admin/config?router=unknown')).status).toBe(400);
+    expect((await authedPost('/admin/profiles/register?router=frontier', {})).status).toBe(400);
+    expect(registerProfiles).not.toHaveBeenCalled();
+  });
+
+  it('does not inspect owner queue coverage for frontier', async () => {
+    vi.mocked(getConfigRows).mockResolvedValue({
+      ...TEST_CONFIG_ROWS,
+      config: { ...TEST_CONFIG_ROWS.config, router: 'frontier' },
+    });
+    const response = await authedGet('/admin/registry?router=frontier');
+    expect(response.status).toBe(200);
+    expect(countCurrentProfilesByStatus).toHaveBeenCalledOnce();
+    expect(countCurrentProfilesByStatus).toHaveBeenCalledWith(
+      env.BENCH_DB,
+      expect.objectContaining({ router: 'frontier' }),
+      'platform'
+    );
+  });
+});
+
+describe('shared concurrency cap', () => {
+  it('returns HTTP 400 rather than HTTP 500 when saving overcommits the combined budget', async () => {
+    const response = await authedPut('/admin/config', {
+      ...TEST_CONFIG,
+      maxConcurrency: 150,
+      userMaxConcurrency: 100,
+    });
+    expect(response.status).toBe(400);
+    expect(replaceConfig).not.toHaveBeenCalled();
+  });
+});
+
+describe('body router selection', () => {
+  it('saves frontier from the body when no query router is supplied', async () => {
+    const response = await authedPut('/admin/config', { ...TEST_CONFIG, router: 'frontier' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ config: { router: 'frontier' } });
+    expect(replaceConfig).toHaveBeenCalledWith(
+      env.BENCH_DB,
+      expect.anything(),
+      expect.any(Array),
+      expect.any(Array),
+      expect.any(Array),
+      'frontier'
+    );
+  });
+
+  it('rejects frontier owner profiles selected through the body', async () => {
+    const response = await authedPost('/admin/profiles/register', {
+      router: 'frontier',
+      ownerType: 'user',
+      ownerId: 'owner',
+      entries: [{ model: 'a/b', variant: null }],
+    });
+    expect(response.status).toBe(400);
+    expect(registerProfiles).not.toHaveBeenCalled();
   });
 });

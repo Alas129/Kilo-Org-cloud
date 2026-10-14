@@ -9,6 +9,7 @@ import {
   type ComplexityLabels,
   type EffortByComplexity,
   type BenchmarkDeciderModel,
+  type AutoRouter,
   type CandidatePricing,
   type ProductionTokenProfile,
   type BenchmarkModelSummary,
@@ -28,7 +29,8 @@ export function buildEffortByComplexity(
   perCaseResults: OfflineSweep['pairs'],
   labels: ComplexityLabels,
   minAccuracy: number,
-  profile: ProductionTokenProfile | null = null
+  profile: ProductionTokenProfile | null = null,
+  accuracyNoiseBand?: number
 ): EffortByComplexity {
   const mapping: EffortByComplexity = {};
   for (const bucket of ReasoningComplexitySchema.options) {
@@ -71,7 +73,7 @@ export function buildEffortByComplexity(
         const ranked = rankCandidates(
           measured.map(summary => ({ ...summary, pricing: candidate.pricing })),
           minAccuracy,
-          { profile }
+          { profile, accuracyNoiseBand }
         );
         (routeMapping[candidate.model] ??= {})[bucket] = ranked[0]
           ? (ranked[0].variant ?? null)
@@ -93,6 +95,7 @@ export function buildRoutingTable(params: {
   version: string;
   generatedAt: string;
   minAccuracy: number;
+  accuracyNoiseBand?: number;
   switchCostFactor: number;
   bestAccuracySwitchThreshold: number;
   productionTokenProfile?: ProductionTokenProfile | null;
@@ -146,7 +149,10 @@ export function buildRoutingTable(params: {
           };
         }),
       minAccuracy,
-      { profile: params.productionTokenProfile ?? null }
+      {
+        profile: params.productionTokenProfile ?? null,
+        accuracyNoiseBand: params.accuracyNoiseBand,
+      }
     );
 
   const routes = Object.fromEntries(
@@ -171,7 +177,8 @@ export function buildRoutingTable(params: {
             params.perCaseResults,
             params.complexityLabels,
             minAccuracy,
-            params.productionTokenProfile ?? null
+            params.productionTokenProfile ?? null,
+            params.accuracyNoiseBand
           ),
         }
       : {}),
@@ -207,6 +214,10 @@ export function computeRegistryRoutingTableVersion(
   // then skips — the live table would keep the old thresholds until some new
   // measurement happened to change the ready set.
   knobs: {
+    router?: AutoRouter;
+    engineIdentity?: string;
+    accuracyNoiseBand?: number;
+    frontierMinAccuracyDelta?: number;
     minAccuracy: number;
     switchCostFactor: number;
     bestAccuracySwitchThreshold: number;
@@ -221,9 +232,13 @@ export function computeRegistryRoutingTableVersion(
   const parts = [...contributors].map(c => `${c.runId}\0${c.model}\0${c.variant ?? ''}`).sort();
   // Read the knobs positionally: hashing the object would make the version
   // depend on the caller's key order.
-  return `registry-${fnv1aHex(
+  return `${knobs.router === 'frontier' ? 'frontier-' : ''}registry-${fnv1aHex(
     JSON.stringify({
       parts,
+      router: knobs.router ?? 'efficient',
+      engineIdentity: knobs.engineIdentity ?? null,
+      accuracyNoiseBand: knobs.accuracyNoiseBand ?? 0.05,
+      frontierMinAccuracyDelta: knobs.frontierMinAccuracyDelta ?? 0,
       knobs: [knobs.minAccuracy, knobs.switchCostFactor, knobs.bestAccuracySwitchThreshold],
       profile: knobs.productionTokenProfile
         ? [
@@ -303,6 +318,7 @@ export function filterSummariesByProvenance(
 export function buildCustomRoutingTable(params: {
   generatedAt: string;
   minAccuracy: number;
+  accuracyNoiseBand?: number;
   switchCostFactor: number;
   bestAccuracySwitchThreshold: number;
   productionTokenProfile?: ProductionTokenProfile | null;
@@ -352,7 +368,10 @@ export function buildCustomRoutingTable(params: {
           variant: s.variant ?? null,
         })),
       minAccuracy,
-      { profile: params.productionTokenProfile ?? null }
+      {
+        profile: params.productionTokenProfile ?? null,
+        accuracyNoiseBand: params.accuracyNoiseBand,
+      }
     );
     if (candidates.length > 0) {
       routes[routeKey] = candidates;
@@ -367,7 +386,8 @@ export function buildCustomRoutingTable(params: {
           params.perCaseResults,
           params.complexityLabels,
           minAccuracy,
-          params.productionTokenProfile ?? null
+          params.productionTokenProfile ?? null,
+          params.accuracyNoiseBand
         )
       : undefined;
 
@@ -379,6 +399,7 @@ export function buildCustomRoutingTable(params: {
     })),
     {
       minAccuracy,
+      accuracyNoiseBand: params.accuracyNoiseBand,
       switchCostFactor,
       bestAccuracySwitchThreshold,
       productionTokenProfile: params.productionTokenProfile,

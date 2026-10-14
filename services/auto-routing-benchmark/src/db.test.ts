@@ -175,6 +175,9 @@ describe('mapRunRow', () => {
   it('maps a RunRow and attaches its summaries', () => {
     const runRow = {
       id: 'run-abc',
+      router: 'efficient' as const,
+      accuracy_noise_band: 0.05,
+      frontier_min_accuracy_delta: 0,
       kind: 'classifier' as const,
       status: 'completed' as const,
       started_at: '2026-06-10T04:10:00.000Z',
@@ -220,6 +223,9 @@ describe('mapRunRow', () => {
   it('attaches an empty summaries array when none are provided', () => {
     const runRow = {
       id: 'run-xyz',
+      router: 'efficient' as const,
+      accuracy_noise_band: 0.05,
+      frontier_min_accuracy_delta: 0,
       kind: 'decider' as const,
       status: 'running' as const,
       started_at: '2026-06-11T05:10:00.000Z',
@@ -264,6 +270,14 @@ const sampleTable: RoutingTable = {
 };
 
 describe('routingTableToRows', () => {
+  it('stores the selected router without changing artifact reconstruction', () => {
+    const efficient = routingTableToRows(sampleTable, 'now');
+    const frontier = routingTableToRows(sampleTable, 'now', 'frontier');
+    expect(efficient.tableRow.router).toBe('efficient');
+    expect(frontier.tableRow.router).toBe('frontier');
+    expect(rowsToRoutingTable(frontier.tableRow, frontier.candidateRows)).toEqual(sampleTable);
+  });
+
   it('produces a tableRow with the correct scalar fields', () => {
     const { tableRow } = routingTableToRows(sampleTable, '2026-06-01T11:00:00.000Z');
     expect(tableRow.run_id).toBe('run-test-1');
@@ -361,6 +375,7 @@ describe('rowsToRoutingTable', () => {
   it('reads back a reasoning_effort candidate row as effort-only', () => {
     const tableRow = {
       run_id: 'run-effort',
+      router: 'efficient' as const,
       published_at: '2026-06-01T11:00:00.000Z',
       generated_at: '2026-06-01T10:00:00.000Z',
       min_accuracy: 0.7,
@@ -397,6 +412,7 @@ describe('rowsToRoutingTable', () => {
   it('reads back a variant-only candidate row as variant', () => {
     const tableRow = {
       run_id: 'run-variant',
+      router: 'efficient' as const,
       published_at: '2026-06-01T11:00:00.000Z',
       generated_at: '2026-06-01T10:00:00.000Z',
       min_accuracy: 0.7,

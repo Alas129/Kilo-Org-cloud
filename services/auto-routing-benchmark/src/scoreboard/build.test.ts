@@ -77,7 +77,13 @@ function build(
   replay: ReplayMetrics | null = null,
   options: Pick<
     Parameters<typeof buildScoreboard>[0],
-    'costProfile' | 'rerankProfile' | 'sweep' | 'rebuildFromSweep' | 'pricing' | 'complexityLabels'
+    | 'costProfile'
+    | 'rerankProfile'
+    | 'sweep'
+    | 'rebuildFromSweep'
+    | 'pricing'
+    | 'complexityLabels'
+    | 'accuracyNoiseBand'
   > = {}
 ) {
   return buildScoreboard({
@@ -92,6 +98,49 @@ function build(
 }
 
 describe('buildScoreboard', () => {
+  it.each([
+    { accuracyNoiseBand: undefined, expectedAccuracy: 0 },
+    { accuracyNoiseBand: 0.05, expectedAccuracy: 0 },
+    { accuracyNoiseBand: 0.01, expectedAccuracy: 1 },
+  ])(
+    'rebuilds learned efforts with noise band $accuracyNoiseBand',
+    ({ accuracyNoiseBand, expectedAccuracy }) => {
+      const route = 'implementation/code_generation';
+      const pairs: OfflineSweep['pairs'] = ['low', 'high'].map(variant => ({
+        model: 'fixture/shared',
+        variant,
+        results: Array.from({ length: 7 }, (_, i) => ({
+          caseId: `case-${i}`,
+          rep: 0,
+          routeKey: route,
+          split: i === 6 ? ('heldOut' as const) : ('train' as const),
+          score: variant === 'high' ? 1 : i === 6 ? 0 : 0.97,
+          costUsd: variant === 'low' ? 0.01 : 1,
+          graderCostUsd: 0,
+          latencyMs: 100,
+          error: null,
+        })),
+      }));
+      const sweep: OfflineSweep = {
+        startedAt: now.toISOString(),
+        truncated: false,
+        costUsd: 0,
+        graderCostUsd: 0,
+        pairs,
+        summaries: summarizeSweep(pairs),
+      };
+      const result = build({ ...table, minAccuracy: 0.99 }, prod({ [route]: 1 }), null, {
+        sweep,
+        rebuildFromSweep: true,
+        complexityLabels: Object.fromEntries(
+          Array.from({ length: 7 }, (_, i) => [`case-${i}`, 'high' as const])
+        ),
+        accuracyNoiseBand,
+      });
+      expect(result.quality.heldOut?.accuracyWeighted).toBe(expectedAccuracy);
+    }
+  );
+
   it('learns efforts from train buckets and evaluates mapped per-case held-out results', () => {
     const route = 'implementation/code_generation';
     const labels = Object.fromEntries([
@@ -249,6 +298,25 @@ describe('buildScoreboard', () => {
       meetsThreshold: true,
     });
     expect(build(parsed).cost.estimatedRequestUsdWeighted).toBeCloseTo(0.22);
+  });
+
+  it('validates live-table routers and defaults legacy rows to efficient', () => {
+    const row = {
+      run_id: 'fixture/live',
+      published_at: now.toISOString(),
+      generated_at: now.toISOString(),
+      min_accuracy: 0.5,
+      switch_cost_factor: 2,
+      best_accuracy_switch_threshold: 0.05,
+      source: 'benchmark',
+    };
+    expect(LiveScoreboardTableRowSchema.parse(row).router).toBe('efficient');
+    expect(LiveScoreboardTableRowSchema.parse({ ...row, router: 'frontier' }).router).toBe(
+      'frontier'
+    );
+    expect(LiveScoreboardTableRowSchema.safeParse({ ...row, router: 'unknown' }).success).toBe(
+      false
+    );
   });
 
   it('weights prompt-aware estimates without changing the published first picks', () => {

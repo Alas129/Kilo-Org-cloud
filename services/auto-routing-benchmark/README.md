@@ -1,8 +1,8 @@
 # auto-routing-benchmark
 
 Cloudflare Worker that benchmarks candidate models and publishes the artifacts
-that drive `kilo-auto/efficient` routing. It is the **sole writer** of the
-routing table and classifier winner; `services/auto-routing` and the `apps/web`
+that drive `kilo-auto/efficient` and `kilo-auto/frontier` routing. It is the **sole writer** of the
+per-router routing tables and shared classifier winner; `services/auto-routing` and the `apps/web`
 gateway only read them. See `docs/adr/0002-auto-routing-efficient.md` for the
 design, invariants, and rollout/rollback.
 
@@ -19,16 +19,46 @@ design, invariants, and rollout/rollback.
   `routeAccuracy`. The classifier winner is the cheapest model whose weighted
   `accuracy` meets `minAccuracy`. A failed call scores 0 and counts as a route
   miss; there is no fallback classification.
-- **Decider benchmark** — runs 180 golden tasks per candidate through the real
-  `kilo` CLI inside a Cloudflare Container and grades mechanically. Every result
-  lands in the **global decider registry** (`benchmark_profiles`), keyed by exact
-  `(model, variant)` under the live engine identity and repetitions. Both the
-  platform routing table and each owner's custom table are assembled from that
-  one registry, so a model wanted by the platform list and by an owner pool is
-  measured once.
+- **Decider benchmark** — runs the selected router's golden tasks per candidate through the real
+  `kilo` CLI inside a Cloudflare Container and grades mechanically. Efficient uses `DECIDER_CASES`;
+  frontier uses only `FRONTIER_CASES`, including its harder long-context tasks, tagged `frontier`.
+  Results land in the decider registry (`benchmark_profiles`), keyed by
+  `(router, model, variant, engine identity, repetitions)`. Engine identity includes the router
+  and a hash of all selected dataset inputs. Efficient platform and owner pools share their
+  measurements; frontier measurements never satisfy efficient profiles.
 - Normalized results live in D1 (`BENCH_DB`); published artifacts are cached in
   the shared `AUTO_ROUTING_CONFIG` KV namespace (publish = delete the keys so the
   next read repopulates from D1).
+
+## Router isolation and activation
+
+`router` is `efficient` or `frontier`; omitted API selectors default to `efficient`.
+Each router owns its saved decider model list, catalog-expanded effort entries, registry,
+runs, routing table, and publication cache key. Accuracy thresholds, `accuracyNoiseBand`,
+`frontierMinAccuracyDelta`, token profile, switch horizon and thresholds, and platform
+`maxConcurrency` are configured independently. The classifier and its winner remain shared:
+classifier runs use the efficient configuration even when requested from the frontier view.
+Classifier inference billing is owned by the routing worker. Usage IDs and durable delivery
+objects include the router, so an otherwise identical call on another router cannot be
+deduplicated as a retry of the first call.
+Capability lookups derive candidate IDs from the selected router's table; the capability
+cache remains a shared model-ID union because modalities and context limits belong to models.
+
+Frontier initially has no saved configuration or published table. No default model pool or
+efficient table is fabricated for it. Before enabling frontier serving, administrators must
+split the existing container budgets, save a frontier configuration with its own decider
+models, benchmark those entries, and publish a complete frontier table.
+
+Efficient platform and owner budgets plus frontier's platform budget must total at most
+`BENCHMARK_CONTAINER_BUDGET` (200). Frontier ignores `userMaxConcurrency`, never registers owner
+custom pools, and has only a platform queue (`both` selects that queue; `user` is rejected).
+Saving configuration and starting decider runs enforce the shared cap. Scheduled drains and
+daily platform sync process both routers with their configured budgets.
+
+Efficient publications invalidate `routing_table_v1`; frontier publications invalidate
+`routing_table_frontier_v1`. Router, engine/dataset identity, ranking settings, and contributing
+measurements are included in routing-table version hashes.
+
 
 ## Platform model selection
 
@@ -44,7 +74,8 @@ design, invariants, and rollout/rollback.
 Each pair uses its own CLI variant, results, cost, latency, and registry provenance.
 The worker drains expanded entries in batches that fit the configured container budget.
 New routing tables rank exact pairs and emit `variant`, not `reasoningEffort`.
-Legacy nullable storage columns remain; this change requires no migration.
+Legacy nullable effort storage columns remain. Router isolation requires D1 schema migration;
+existing rows stay in the efficient namespace, with noise band 0.05 and frontier delta 0.
 
 The admin panel shows measured coverage and pending, running, or failed efforts per model.
 Each route starts collapsed with its first-ranked pair, accuracy, and cost.
@@ -53,7 +84,9 @@ Expand a route to inspect every ranked model/effort pair.
 ## Ranking
 
 - `rankCandidates` (`@kilocode/auto-routing-contracts`) orders every route's candidates.
-- A candidate competes when its accuracy is at most 0.05 below `minAccuracy`, the benchmark noise band.
+- A candidate competes within the router's `accuracyNoiseBand` of its effective `minAccuracy` (default noise band 0.05).
+- Frontier's effective threshold is `min(1, minAccuracy + frontierMinAccuracyDelta)`; the delta defaults to 0.
+- Both routers use the same best-value formula, selecting models and efforts from their own measured pools.
 - Competing candidates are ordered by `estimatedRequestCostUsd × effectiveLatency^1.5 / wilson^15`, lowest first. With known TTFT, `effectiveLatency = p50TtftMs + LATENCY_TOTAL_WEIGHT × p50LatencyMs`, where the exported `LATENCY_TOTAL_WEIGHT` is 0.15 (tuned on a fully streamed offline sweep); without TTFT, total `p50LatencyMs` alone preserves legacy ordering.
 - `estimatedRequestCostUsd` adds the configured `productionTokenProfile` prompt cost at catalog prices to `avgCostUsd`. Without a profile or pricing, it equals `avgCostUsd`.
 - `wilson` is the Wilson lower bound (z = 1) of accuracy over the candidate's measured `cases`. A well-measured candidate beats a thinly measured one at equal accuracy. Without `cases`, raw accuracy is used.
@@ -194,6 +227,10 @@ pnpm --filter auto-routing-benchmark scoreboard build --label candidate --table 
 pnpm --filter auto-routing-benchmark scoreboard compare baseline.json candidate.json --relative-only
 ```
 
+Use `--accuracy-noise-band <0..1>` when rebuilding or reranking a scoreboard with a
+nondefault ranking band. It applies to both route ranking and learned complexity
+variants; omitting it preserves the default `0.05` band.
+
 On the work VM, build and start the existing bench image (from the repository root):
 
 ```bash
@@ -319,6 +356,11 @@ A report with indeterminate grader spend cannot resume safely.
 All under `/admin`, gated by `Authorization: Bearer <INTERNAL_API_SECRET_PROD>`
 (the gateway's admin panel proxies these with the internal secret):
 
+GET endpoints accept `?router=efficient|frontier`; mutations accept `router` in their body
+or query. Omission selects efficient. Owner profile registration/status and custom-table
+endpoints reject frontier. The classifier-winner endpoint returns the shared winner.
+
+
 | Endpoint | Purpose |
 |---|---|
 | `GET/PUT /admin/config` | Read / save benchmark config (model lists, thresholds, `benchmarkUserId`, optional `benchmarkOrgId`) |
@@ -355,8 +397,9 @@ row is global, so the pair is benchmarked once and serves both.
 | Container budget | `maxConcurrency` | `userMaxConcurrency` |
 | Slot | Its own; a running user-queue run never blocks it | Its own; a running platform-queue run never blocks it |
 
-The two budgets must sum to at most `BENCHMARK_CONTAINER_BUDGET` (200, the
-wrangler `max_instances`); the config contract rejects a larger pair.
+The efficient platform and owner budgets plus the frontier platform budget must sum to at most
+`BENCHMARK_CONTAINER_BUDGET` (200, the wrangler `max_instances`). Split these budgets before
+saving frontier configuration; its owner budget is unused.
 
 After any decider run completes, the worker assembles the platform table from ready, current registry entries for the current catalog pairs.
 If a desired pair remains pending or running, the previous table stays live.
