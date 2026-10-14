@@ -548,6 +548,7 @@ export const decideHandler: Handler<HonoEnv> = async c => {
           routing.routingMode,
           {
             constraints,
+            contextTokens: payload.constraints?.promptTokensEstimate,
             capabilityMap:
               hasConstraints || routing.configuredPool !== null ? routing.capabilities : undefined,
             failClosedOnInactive: routing.configuredPool !== null,
@@ -603,6 +604,7 @@ export const decideHandler: Handler<HonoEnv> = async c => {
   const incumbent = stickyToIncumbent(sticky);
   const decisionOptions = {
     constraints: payload.constraints,
+    contextTokens: payload.constraints?.promptTokensEstimate,
     capabilityMap: hasConstraints || configuredPool !== null ? capabilities : undefined,
     failClosedOnInactive: configuredPool !== null,
   };
