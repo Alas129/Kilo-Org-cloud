@@ -25,8 +25,9 @@ export type BenchmarkKind = z.infer<typeof BenchmarkKindSchema>;
  * Which registry queue a run drains. Decider measurements all land in the one
  * global Benchmark-profile registry; the purpose only records who asked for the
  * entries — the saved platform decider list ('platform') or owner pools
- * ('user'). Each purpose owns its own decider slot and container budget, so the
- * two queues run independently. Classifier runs are always 'platform'.
+ * ('user'). Each purpose owns its own decider slot, so the two queues run
+ * independently; both draw on the shared container budget. Classifier runs
+ * are always 'platform'.
  */
 export const BenchmarkRunPurposeSchema = z.enum(['platform', 'user']);
 export type BenchmarkRunPurpose = z.infer<typeof BenchmarkRunPurposeSchema>;
@@ -36,11 +37,28 @@ export const BenchmarkQueueSelectorSchema = z.enum(['platform', 'user', 'both'])
 export type BenchmarkQueueSelector = z.infer<typeof BenchmarkQueueSelectorSchema>;
 
 /**
- * Total live decider containers the benchmark runner may hold (wrangler
- * `max_instances`). Platform and profile runs are independent, so their
- * configured lane budgets must sum to at most this.
+ * Total live decider containers the benchmark runner may hold, shared by every
+ * router and queue. Each queue job holds one container for its consumer
+ * invocation, so this equals Cloudflare's limit of 250 concurrent push-consumer
+ * invocations. Raising it needs a Cloudflare limit increase plus matching
+ * container `max_instances` and jobs consumer `max_concurrency` in wrangler.jsonc.
  */
-export const BENCHMARK_CONTAINER_BUDGET = 200;
+export const BENCHMARK_CONTAINER_BUDGET = 250;
+
+/**
+ * Containers withheld from owner-queue runs. User-queue runs stop at
+ * BENCHMARK_CONTAINER_BUDGET - BENCHMARK_PLATFORM_RESERVED_CONTAINERS, and a
+ * platform run may claim the whole budget minus the user lanes already live, so
+ * these containers are always available to platform runs.
+ */
+export const BENCHMARK_PLATFORM_RESERVED_CONTAINERS = 100;
+
+/**
+ * Containers owner-queue runs may hold. User runs wait for platform runs once
+ * they hold this many, so the platform reserve always stays available.
+ */
+export const BENCHMARK_USER_CONTAINER_LIMIT =
+  BENCHMARK_CONTAINER_BUDGET - BENCHMARK_PLATFORM_RESERVED_CONTAINERS;
 
 /** Exact model/effort identity in persisted benchmark run snapshots. */
 export const BenchmarkDeciderModelSchema = z
@@ -89,6 +107,10 @@ function addDuplicateModelIssues(ids: string[], path: string, ctx: z.RefinementC
   });
 }
 
+// Retired per-config concurrency knobs (maxConcurrency, userMaxConcurrency) are
+// gone from the contract: container lanes come from the shared budget in
+// BENCHMARK_CONTAINER_BUDGET. Zod strips the stale keys from payloads a
+// previous admin UI or a stored config still sends.
 export const BenchmarkConfigSchema = z
   .object({
     router: AutoRouterSchema.default(DEFAULT_AUTO_ROUTER),
@@ -98,17 +120,6 @@ export const BenchmarkConfigSchema = z
     minAccuracy: z.number().min(0).max(1),
     accuracyNoiseBand: z.number().min(0).max(1).default(0.05),
     frontierMinAccuracyDelta: z.number().min(0).max(1).default(0),
-    // Platform parallelism budget. Platform decider runs use it as a live
-    // container budget; classifier runs use it for parallel OpenRouter calls.
-    maxConcurrency: z.number().int().min(1).max(BENCHMARK_CONTAINER_BUDGET),
-    // Live container budget for user-queue runs. Separate from maxConcurrency so
-    // a user-queue run and a platform-queue run can hold containers at once.
-    userMaxConcurrency: z
-      .number()
-      .int()
-      .min(1)
-      .max(BENCHMARK_CONTAINER_BUDGET)
-      .default(BENCHMARK_CONTAINER_BUDGET / 2),
     // Optional override for the Kilo user whose identity/billing the decider
     // CLI runs execute under. Null means the worker uses DEFAULT_BENCHMARK_USER_ID.
     benchmarkUserId: z.string().trim().min(1).nullable(),
@@ -146,18 +157,6 @@ export const BenchmarkConfigSchema = z
       'deciderModels',
       ctx
     );
-    // Platform-queue and user-queue runs can hold containers at the same time,
-    // so the two budgets share one hard platform cap.
-    if (
-      config.router === 'efficient' &&
-      config.maxConcurrency + config.userMaxConcurrency > BENCHMARK_CONTAINER_BUDGET
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['userMaxConcurrency'],
-        message: `Max concurrency + user max concurrency must be at most ${BENCHMARK_CONTAINER_BUDGET}`,
-      });
-    }
   });
 export type BenchmarkConfig = z.infer<typeof BenchmarkConfigSchema>;
 
