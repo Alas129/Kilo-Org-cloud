@@ -4,6 +4,10 @@ import type {
   BenchmarkPlatformModel,
   ProductionTokenProfile,
 } from '@kilocode/auto-routing-contracts';
+import {
+  parseStoredPolicyComputed,
+  parseStoredPolicyOverrides,
+} from '@kilocode/auto-routing-contracts';
 import { getConfigRows, replaceConfig, type ConfigDeciderModelRow } from './db';
 
 // Retain nullable legacy columns for rolling deploys, but never read saved efforts.
@@ -34,6 +38,9 @@ export function mapConfigRows(
     classifier_repetitions: number;
     decider_repetitions: number;
     classifier_max_p95_latency_ms: number | null;
+    // Stored JSON; entries that fail their key's schema are ignored on read.
+    policy_overrides?: unknown;
+    policy_computed?: unknown;
     updated_at: string;
     updated_by: string | null;
   } | null,
@@ -63,6 +70,8 @@ export function mapConfigRows(
     classifierRepetitions: configRow.classifier_repetitions,
     deciderRepetitions: configRow.decider_repetitions,
     classifierMaxP95LatencyMs: configRow.classifier_max_p95_latency_ms,
+    policyOverrides: parseStoredPolicyOverrides(configRow.policy_overrides),
+    policyComputed: parseStoredPolicyComputed(configRow.policy_computed),
     updatedAt: configRow.updated_at,
     updatedBy: configRow.updated_by,
   };
@@ -83,6 +92,7 @@ export async function saveBenchmarkConfig(
 ): Promise<BenchmarkConfig> {
   const updatedAt = new Date().toISOString();
   const stamped: BenchmarkConfig = { ...config, updatedAt, updatedBy };
+  const existing = await getBenchmarkConfig(db, config.router);
 
   const deciderModelRows = toDeciderModelRows(config.deciderModels);
 
@@ -102,6 +112,7 @@ export async function saveBenchmarkConfig(
       classifier_repetitions: config.classifierRepetitions,
       decider_repetitions: config.deciderRepetitions,
       classifier_max_p95_latency_ms: config.classifierMaxP95LatencyMs,
+      policy_overrides: config.policyOverrides ?? null,
       updated_at: updatedAt,
       updated_by: updatedBy,
     },
@@ -110,5 +121,6 @@ export async function saveBenchmarkConfig(
     config.router
   );
 
-  return stamped;
+  // The computed map is server-owned: an admin save must not clear it.
+  return { ...stamped, policyComputed: existing?.policyComputed ?? null };
 }

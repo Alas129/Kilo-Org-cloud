@@ -55,6 +55,8 @@ const TEST_CONFIG_ROWS = {
     classifier_repetitions: TEST_CONFIG.classifierRepetitions,
     decider_repetitions: TEST_CONFIG.deciderRepetitions,
     classifier_max_p95_latency_ms: TEST_CONFIG.classifierMaxP95LatencyMs,
+    policy_overrides: null,
+    policy_computed: null,
     updated_at: '2026-06-01T00:00:00.000Z',
     updated_by: null,
   },
@@ -241,7 +243,7 @@ describe('GET /admin/config', () => {
     // getConfigRows already returns null config by default
     const res = await authedGet('/admin/config');
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ config: null });
+    await expect(res.json()).resolves.toEqual({ config: null, policySettings: null });
   });
 
   it('returns the stored config when DB rows exist', async () => {
@@ -270,6 +272,8 @@ describe('GET /admin/config', () => {
         decider_repetitions: 1,
         classifier_max_p95_latency_ms: null,
         user_max_concurrency: 100,
+        policy_overrides: null,
+        policy_computed: null,
         updated_at: '2026-06-01T00:00:00.000Z',
         updated_by: 'admin@example.com',
       },
@@ -281,9 +285,52 @@ describe('GET /admin/config', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       config: { minAccuracy: number; updatedBy: string | null };
+      policySettings: Record<
+        string,
+        { kind: string; effective: unknown; override: unknown; computed: unknown; reason: unknown }
+      >;
     };
     expect(body.config.minAccuracy).toBe(0.9);
     expect(body.config.updatedBy).toBe('admin@example.com');
+    expect(body.policySettings.minAccuracy).toMatchObject({
+      kind: 'auto',
+      effective: 0.9,
+      override: null,
+      computed: null,
+    });
+    expect(body.policySettings.switchCostFactor).toMatchObject({
+      kind: 'fixed',
+      effective: 3,
+      reason: expect.any(String),
+    });
+  });
+
+  it('returns overrides and computed values per policy setting', async () => {
+    vi.mocked(getConfigRows).mockResolvedValueOnce({
+      ...TEST_CONFIG_ROWS,
+      config: {
+        ...TEST_CONFIG_ROWS.config,
+        policy_overrides: { minAccuracy: 0.95 },
+        policy_computed: {
+          accuracyNoiseBand: {
+            value: 0.08,
+            computedAt: '2026-06-02T00:00:00.000Z',
+            source: 'held-out-grid',
+            evidence: 'fixture',
+          },
+        },
+      },
+    });
+
+    const res = await authedGet('/admin/config');
+    const body = (await res.json()) as {
+      policySettings: Record<string, { effective: number; override: number | null }>;
+    };
+    expect(body.policySettings.minAccuracy).toMatchObject({ effective: 0.95, override: 0.95 });
+    expect(body.policySettings.accuracyNoiseBand).toMatchObject({
+      effective: 0.08,
+      override: null,
+    });
   });
 });
 
@@ -302,6 +349,19 @@ describe('PUT /admin/config', () => {
 
   it('returns 400 for a schema-invalid config', async () => {
     const res = await authedPut('/admin/config', { classifierModels: 'oops' });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      success: false,
+      error: 'Invalid benchmark config',
+    });
+    expect(replaceConfig).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when an override value does not fit its setting', async () => {
+    const res = await authedPut('/admin/config', {
+      ...TEST_CONFIG,
+      policyOverrides: { minAccuracy: { uncachedInputTokens: 1000, cachedInputTokens: 200 } },
+    });
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toMatchObject({
       success: false,
