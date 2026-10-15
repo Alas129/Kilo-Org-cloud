@@ -103,7 +103,7 @@ measurements are included in routing-table version hashes.
 - If the catalog fails or omits a selected model, reconciliation fails. It does not infer a default effort.
 - Catalog requests have a 10-second deadline, including body reads, so a stalled response cannot block both queues indefinitely.
 - Manual and automatic selections use the same expansion. Existing saved effort selections no longer restrict platform measurements.
-- Owner pools still select exact pairs. Platform expansion does not change their entries.
+- Owner pools use the same model-level selection and all-efforts expansion.
 
 Each pair uses its own CLI variant, results, cost, latency, and registry provenance.
 The worker drains expanded entries in batches that fit the shared container budget.
@@ -448,17 +448,19 @@ endpoints reject frontier. The classifier-winner endpoint returns the shared win
 | `GET /admin/routing-table` | Latest published **platform** routing table |
 | `GET /admin/classifier-winner` | Current classifier winner |
 | `POST /admin/debug-cli` | Run one ad-hoc prompt through the kilo CLI container (diagnostic) |
-| `POST /admin/profiles/register` | Atomically admit missing/stale/retried global Benchmark profiles for an owner (quota 10/24h) |
-| `POST /admin/profiles/status` | Current statuses for up to 10 exact Pool entries (may free-admit engine-drifted rows) |
-| `POST /admin/custom-routing-table` | Assemble a **sparse** custom table for ready/current entries only (`table: null` → balanced fallback) |
+| `POST /admin/profiles/register` | Admit missing/stale/retried profiles for every current catalog effort of the pool models (quota 10 models/24h) |
+| `POST /admin/profiles/status` | Read current per-effort coverage; free re-admission for engine-stale pairs |
+| `POST /admin/custom-routing-table` | Rank ready/current exact pairs for the selected models (`table: null` → balanced fallback) |
 
 ## Owner pools and Benchmark profiles
 
 Owners (personal users or organizations) can constrain `kilo-auto/efficient` to
-1–10 exact `(model, canonical variant)` **Pool entries**. The pool itself lives
-in the auto-routing Durable Object; this worker owns **global Benchmark
-profiles** — per-route measurements for each exact pair under the current
-benchmark engine identity and decider repetitions.
+1–10 **pool models**. The pool lives in the auto-routing Durable Object, whose
+read path collapses and deduplicates legacy exact-pair pools. Each selected model
+expands through the live catalog into every supported reasoning effort, or one
+default pair when there are no reasoning controls. This worker measures exact
+model-effort pairs globally under the current engine identity and repetitions.
+Custom tables rank every measured pair; the router, not the owner, chooses effort.
 
 ### The two registry queues
 
@@ -491,20 +493,18 @@ untouched — it only ever draws on rows the platform list asks for.
 
 ### Request ledger and admission
 
-`POST /admin/profiles/register` evaluates every submitted entry in one D1 batch:
+The platform pays for every owner-requested measurement. Owners are never charged.
+Already ready/current or pending/running pairs are reused by every owner.
 
-- Ready/current or already pending/running global profiles are reported without
-  charging quota.
-- Globally new, engine-stale, or explicitly retried-failed profiles are admitted
-  as `pending` while the owner has fewer than **10** charged admissions in the
-  rolling 24h window (`profile_request_events`). Over-limit → 429, nothing written.
-- Concurrent owners requesting the same exact pair + engine identity dedupe to
-  one global row.
+`POST /admin/profiles/register` admits missing, stale, or retried pairs and records
+one quota request event per newly requested model in the same D1 batch. The rolling
+quota counts models, not efforts. Engine-stale remeasurement is quota-free.
+Concurrent requests share one global pair; the first admission wins and the
+others report its status.
 
-Admission is all-or-nothing and returns before the caller's Durable Object
-settings write. If that later write fails, the owner's previous pool is kept,
-admitted profiles stay pending globally, the single-slot drain still runs them,
-and a later retry reports them without re-charging quota.
+Admission returns before the caller's Durable Object settings write. If that
+write fails, the previous pool remains, but admitted measurements still run.
+Retrying reuses the same global profiles without charging quota twice.
 
 ### Status transitions and drain
 

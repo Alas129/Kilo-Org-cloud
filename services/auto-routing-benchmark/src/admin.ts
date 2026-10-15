@@ -49,6 +49,7 @@ import {
 } from './db';
 import { loadRunProgress } from './run-progress';
 import type { HonoEnv } from './hono-env';
+import { fetchBenchmarkModelCatalog, platformRegistryEntries } from './platform-models';
 
 const DebugCliRequestSchema = z.object({
   model: z.string().trim().min(1),
@@ -300,7 +301,6 @@ export function registerAdminRoutes(app: Hono<HonoEnv>): void {
     }
   );
 
-  // Atomically admit missing/stale/retried Benchmark profiles for an owner.
   app.post(
     '/admin/profiles/register',
     zodJsonValidator(RegisterBenchmarkProfilesRequestSchema, {
@@ -322,11 +322,25 @@ export function registerAdminRoutes(app: Hono<HonoEnv>): void {
         );
       }
       try {
+        const catalog = await fetchBenchmarkModelCatalog(c.env);
+        const available = new Set(catalog.data.map(model => model.id));
+        for (const entry of body.entries) {
+          if (!available.has(entry.model)) {
+            throw new ProfileValidationError(
+              `Model is unavailable in the current catalog: ${entry.model}`
+            );
+          }
+        }
+        const pairs = platformRegistryEntries(
+          { deciderModels: body.entries.map(entry => ({ id: entry.model })) },
+          catalog
+        );
+        const retryModels = new Set((body.retryEntries ?? []).map(entry => entry.model));
         const result = await registerProfiles(c.env.BENCH_DB, config, {
           ownerType: body.ownerType,
           ownerId: body.ownerId,
-          entries: body.entries,
-          retryEntries: body.retryEntries,
+          pairs,
+          retryPairs: pairs.filter(pair => retryModels.has(pair.model)),
         });
         return c.json(result);
       } catch (error) {
@@ -341,7 +355,6 @@ export function registerAdminRoutes(app: Hono<HonoEnv>): void {
     }
   );
 
-  // Current per-entry Benchmark-profile statuses (may free-admit stale rows).
   app.post(
     '/admin/profiles/status',
     zodJsonValidator(BenchmarkProfileStatusesRequestSchema, {
@@ -363,9 +376,29 @@ export function registerAdminRoutes(app: Hono<HonoEnv>): void {
         );
       }
       try {
-        return c.json(
-          await lookupProfileStatuses(c.env.BENCH_DB, config, { entries: body.entries })
+        const catalog = await fetchBenchmarkModelCatalog(c.env);
+        const available = new Set(catalog.data.map(model => model.id));
+        const supported = body.entries.filter(entry => available.has(entry.model));
+        const pairs = platformRegistryEntries(
+          { deciderModels: supported.map(entry => ({ id: entry.model })) },
+          catalog
         );
+        const result =
+          pairs.length > 0
+            ? await lookupProfileStatuses(c.env.BENCH_DB, config, { pairs })
+            : { statuses: [] };
+        return c.json({
+          statuses: [
+            ...result.statuses,
+            ...body.entries
+              .filter(entry => !available.has(entry.model))
+              .map(entry => ({
+                entry: { model: entry.model, variant: null },
+                status: 'failed',
+                failureReason: 'Model is unavailable in the current catalog.',
+              })),
+          ],
+        });
       } catch (error) {
         if (error instanceof ProfileValidationError || error instanceof ProfileConfigMissingError) {
           return c.json({ error: error.message }, 400);
@@ -397,10 +430,22 @@ export function registerAdminRoutes(app: Hono<HonoEnv>): void {
         );
       }
       try {
+        const catalog = await fetchBenchmarkModelCatalog(c.env);
+        const available = new Set(catalog.data.map(model => model.id));
+        const pairs = platformRegistryEntries(
+          {
+            deciderModels: body.entries
+              .filter(entry => available.has(entry.model))
+              .map(entry => ({ id: entry.model })),
+          },
+          catalog
+        );
         return c.json(
-          await assembleCustomRoutingTable(c.env.BENCH_DB, config, body.entries, {
-            catalogEnv: c.env,
-          })
+          pairs.length > 0
+            ? await assembleCustomRoutingTable(c.env.BENCH_DB, config, pairs, {
+                catalogEnv: c.env,
+              })
+            : { table: null }
         );
       } catch (error) {
         if (error instanceof ProfileValidationError || error instanceof ProfileConfigMissingError) {
