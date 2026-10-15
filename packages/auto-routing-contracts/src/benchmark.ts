@@ -68,7 +68,7 @@ export const BenchmarkPlatformModelSchema = z.object({
 });
 export type BenchmarkPlatformModel = z.infer<typeof BenchmarkPlatformModelSchema>;
 
-export const DEFAULT_BENCHMARK_USER_ID = 'ce12ef3d-ae95-4d77-b4f0-23735f0a0591';
+export const DEFAULT_BENCHMARK_USER_ID = '1f7125a8-351a-45a5-af1f-2b7c24ca7dc3';
 export const DEFAULT_BENCHMARK_ORG_ID = '9d278969-5453-4ae3-a51f-a8d2274a7b56';
 
 // Flags each list entry whose (trimmed) id already appeared earlier in the
@@ -196,6 +196,16 @@ export const BenchmarkModelSummarySchema = z.object({
 });
 export type BenchmarkModelSummary = z.infer<typeof BenchmarkModelSummarySchema>;
 
+// Live case tally for a running run. `totalCases` is null when the expected
+// total cannot be derived exactly (the dataset changed after the run started),
+// so a reader shows counts without a completion estimate.
+export const BenchmarkRunProgressSchema = z.object({
+  completedCases: z.number().int().nonnegative(),
+  totalCases: z.number().int().nonnegative().nullable(),
+  failedCases: z.number().int().nonnegative(),
+});
+export type BenchmarkRunProgress = z.infer<typeof BenchmarkRunProgressSchema>;
+
 export const BenchmarkRunSchema = z.object({
   id: z.string(),
   router: AutoRouterSchema.default(DEFAULT_AUTO_ROUTER),
@@ -206,6 +216,9 @@ export const BenchmarkRunSchema = z.object({
   startedAt: z.string(),
   completedAt: z.string().nullable(),
   error: z.string().nullable(),
+  // Optional so run payloads persisted before the field existed still parse.
+  // Omitted for terminal runs, whose counts are already final in `summaries`.
+  progress: BenchmarkRunProgressSchema.optional(),
   summaries: z.array(BenchmarkModelSummarySchema),
 });
 export type BenchmarkRun = z.infer<typeof BenchmarkRunSchema>;

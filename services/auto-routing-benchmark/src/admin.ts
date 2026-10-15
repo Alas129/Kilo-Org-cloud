@@ -14,8 +14,9 @@ import {
   resolveBenchmarkIdentity,
   StartBenchmarkRunRequestSchema,
   type BenchmarkRun,
+  type BenchmarkRunProgress,
 } from '@kilocode/auto-routing-contracts';
-import { zodJsonValidator } from '@kilocode/worker-utils';
+import { formatError, zodJsonValidator } from '@kilocode/worker-utils';
 import type { Context, Hono } from 'hono';
 import { BenchmarkConcurrencyBudgetError, getBenchmarkConfig, saveBenchmarkConfig } from './config';
 import { debugRunCli } from './cli-runner';
@@ -46,6 +47,7 @@ import {
   listRuns,
   requeueFailedCurrentProfiles,
 } from './db';
+import { loadRunProgress } from './run-progress';
 import type { HonoEnv } from './hono-env';
 
 const DebugCliRequestSchema = z.object({
@@ -118,7 +120,22 @@ export function registerAdminRoutes(app: Hono<HonoEnv>): void {
       purpose: purpose.success ? purpose.data : undefined,
       router: kind.success && kind.data === 'classifier' ? DEFAULT_AUTO_ROUTER : requestRouter(c),
     });
-    return c.json({ runs });
+    // Progress is display-only: a failed count query must not hide the run list.
+    const progressByRunId = await loadRunProgress(
+      c.env.BENCH_DB,
+      runs.filter(run => run.status === 'running').map(run => run.id)
+    ).catch((error: unknown) => {
+      console.warn(
+        JSON.stringify({ event: 'benchmark_run_progress_failed', ...formatError(error) })
+      );
+      return new Map<string, BenchmarkRunProgress>();
+    });
+    return c.json({
+      runs: runs.map(run => {
+        const progress = progressByRunId.get(run.id);
+        return progress ? { ...run, progress } : run;
+      }),
+    });
   });
 
   app.post(
