@@ -32,6 +32,11 @@ import { toast } from 'sonner';
 import { ChevronDown, ChevronRight, Play, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
 import { useModelSelectorList } from '@/lib/hooks/use-openrouter-models';
 import { toEligibleModelOptions } from '@/components/auto-routing/AutoRoutingModeCard';
+import { PoolModalityWarning } from '@/components/auto-routing/PoolModalityWarning';
+import {
+  computePoolModalityCoverage,
+  type ModalityCatalogModel,
+} from '@/lib/auto-routing-pool-modality';
 import { ModelCombobox, type ModelOption } from '@/components/shared/ModelCombobox';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -409,6 +414,7 @@ function BenchmarkConfigEditor({
   classifierModelsLoading,
   classifierModelsError,
   registryEntries,
+  catalogModalities,
 }: {
   config: BenchmarkConfig | null;
   router: AutoRouter;
@@ -420,6 +426,7 @@ function BenchmarkConfigEditor({
   classifierModelsLoading: boolean;
   classifierModelsError?: string;
   registryEntries?: BenchmarkRegistryResponse['platformEntries'];
+  catalogModalities: readonly ModalityCatalogModel[] | null;
 }) {
   const [form, setForm] = useState(() => configToFormState(config));
   // Tracks unsaved local edits. A background config refetch (the runs list
@@ -525,6 +532,15 @@ function BenchmarkConfigEditor({
   const handleSave = useCallback(() => {
     saveMutation.mutate(formStateToConfig(form, config));
   }, [form, config, saveMutation]);
+
+  const modalityCoverage = useMemo(
+    () =>
+      computePoolModalityCoverage({
+        poolModelIds: form.deciderModels.map(row => row.id.trim()).filter(id => id.length > 0),
+        catalog: catalogModalities,
+      }),
+    [form.deciderModels, catalogModalities]
+  );
 
   return (
     <Card className="rounded-lg">
@@ -668,6 +684,8 @@ function BenchmarkConfigEditor({
             Add model
           </Button>
         </div>
+
+        <PoolModalityWarning coverage={modalityCoverage} />
 
         <ConfigSectionHeading
           title="Ranking"
@@ -1434,6 +1452,15 @@ export function RouterBenchmarksSection({ router }: { router: AutoRouter }) {
     }));
   }, [modelsQuery.data?.data]);
   const modelsError = modelsQuery.error instanceof Error ? modelsQuery.error.message : undefined;
+  const catalogModels = modelsQuery.error ? undefined : modelsQuery.data?.data;
+  const catalogModalities = useMemo(
+    () =>
+      catalogModels?.map(model => ({
+        id: model.id,
+        inputModalities: model.architecture?.input_modalities,
+      })) ?? null,
+    [catalogModels]
+  );
   const systemOneModelsQuery = useSystemOneModelOptions();
   const systemOneModelsError =
     systemOneModelsQuery.error instanceof Error ? systemOneModelsQuery.error.message : undefined;
@@ -1600,6 +1627,7 @@ export function RouterBenchmarksSection({ router }: { router: AutoRouter }) {
             classifierModelOptions={systemOneModelsQuery.data ?? []}
             classifierModelsLoading={systemOneModelsQuery.isLoading}
             classifierModelsError={systemOneModelsError}
+            catalogModalities={catalogModalities}
           />
         ) : null}
       </TabsContent>
