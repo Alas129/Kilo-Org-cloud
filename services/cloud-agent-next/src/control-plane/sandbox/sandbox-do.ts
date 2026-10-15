@@ -17,7 +17,7 @@ import { getBillingContext } from '@kilocode/container-usage';
 import { egressPolicySchema, type EgressMode } from '@kilocode/worker-utils/egress-allowlist';
 import type { VercelSandboxResources } from '@kilocode/worker-utils/sandbox-allocation';
 import { CloudAgentRunContainerSchema } from '@kilocode/worker-utils/cloud-agent-queue-report';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
 import {
@@ -196,6 +196,7 @@ import {
 import {
   CONTROL_PLANE_TIMERS,
   resolveControlPlaneTimers,
+  sandboxIdlePolicyForOrigins,
 } from '../../shared/control-plane-timers.js';
 import {
   controlPlaneSandboxSelectionSchema,
@@ -617,7 +618,7 @@ export class SandboxControlV2 extends DurableObject<Env> {
   ) => this.resolveSessionPeer(ownerId, sessionId);
 
   private readonly notifications = createSandboxNotificationDispatcher({
-    budgetMs: () => this.sandboxTimers().sessionNotifyDeadlineMs,
+    budgetMs: () => CONTROL_PLANE_TIMERS.sandbox.sessionNotifyDeadlineMs,
     send: (sessionId, notification, deadlineAt, signal) =>
       this.notifySession(sessionId, notification, deadlineAt, signal),
     waitUntil: work => this.ctx.waitUntil(work),
@@ -709,7 +710,7 @@ export class SandboxControlV2 extends DurableObject<Env> {
       return projectAllocationStatusSnapshot({
         allocation,
         observedAt: Date.now(),
-        inactivityTimeoutMs: this.sandboxTimers().idleMs,
+        inactivityTimeoutMs: this.sandboxIdleTimeoutMs(allocation),
       });
     });
   }
@@ -4615,21 +4616,23 @@ export class SandboxControlV2 extends DurableObject<Env> {
     }
 
     if (frame.type === 'heartbeat') {
-      if (
-        !connectionMatches(
-          await this.readAllocation(),
-          attachment.allocationId,
-          attachment.connectionId
-        )
-      )
-        return;
+      const state = await this.readAllocation();
+      if (!connectionMatches(state, attachment.allocationId, attachment.connectionId)) return;
+      const at = Date.now();
       await this.applyEvent({
         type: 'heartbeat',
-        at: Date.now(),
+        at,
         allocationId: attachment.allocationId,
         connectionId: attachment.connectionId,
         active: frame.active,
       });
+      if (
+        !frame.active &&
+        state.lastActivityAt !== null &&
+        at >= state.lastActivityAt + this.sandboxIdleTimeoutMs(state)
+      ) {
+        await this.applyEvent({ type: 'stop-requested', at, reason: 'sandbox_stopped' });
+      }
       if (
         attachment.heartbeatAck &&
         connectionMatches(
@@ -5081,7 +5084,7 @@ export class SandboxControlV2 extends DurableObject<Env> {
         configuration: this.providerPin?.configuration ?? null,
       },
       observedAt: Date.now(),
-      inactivityTimeoutMs: this.sandboxTimers().idleMs,
+      inactivityTimeoutMs: this.sandboxIdleTimeoutMs(state),
     });
     try {
       socket.send(
@@ -5172,6 +5175,29 @@ export class SandboxControlV2 extends DurableObject<Env> {
   private sandboxTimers(): SandboxTimers {
     return resolveControlPlaneTimers(this.env as unknown as Record<string, string | undefined>)
       .sandbox;
+  }
+
+  /**
+   * Derived from the routes table on every lookup, so no route write can leave
+   * it stale. SQLite extracts only the origin; an unreadable credential source
+   * keeps the longer interactive window.
+   */
+  private sandboxIdleTimeoutMs(state: AllocationState | null): number {
+    const timers = this.sandboxTimers();
+    if (state?.kind !== 'connected') return timers.idleMs;
+    const source = routesTable.credential_source;
+    const routes = this.db
+      .select({
+        state: routesTable.state,
+        readable: sql<number>`coalesce(json_valid(${source}), 1)`,
+        origin: sql<unknown>`case when json_valid(${source}) then json_extract(${source}, '$.createdOnPlatform') end`,
+      })
+      .from(routesTable)
+      .all();
+    return routes.some(route => route.state === 'preparing' || route.readable === 0) ||
+      sandboxIdlePolicyForOrigins(routes.map(route => route.origin)) === 'interactive'
+      ? timers.idleMs
+      : timers.unattendedIdleMs;
   }
 
   private enqueue<T>(task: () => Promise<T>): Promise<T> {

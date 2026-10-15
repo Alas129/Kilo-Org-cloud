@@ -199,7 +199,7 @@ public stream has no reconnecting status today, so `reconnecting` changes no cli
 | `creating` | `stopping` or `stopped` | Classified permanent create/launch error: fail preparing routes immediately; an owned physical ref uses the existing stop ladder | Existing ladder when a ref exists |
 | `starting` | `connected` | Wrapper `hello` accepted | 5 min without `hello` → `stopping` |
 | `connected` | `disconnected` | Socket closed, or no heartbeat for 45 s | — |
-| `connected` | `stopping` | No activity for 10 min, or explicit stop or delete | Idle 10 min |
+| `connected` | `stopping` | Inactive heartbeat after 1 min for unattended routes, no activity for 10 min otherwise, or explicit stop or delete | Unattended idle 1 min; existing idle backstop 10 min |
 | `disconnected` | `connected` | Wrapper `hello`, same or new `wrapperId` | — |
 | `disconnected` | `stopping` | No activity for 10 min, or 90 s after the last frame received, or explicit stop or delete | Idle 10 min, or reconnect 90 s, whichever is earlier |
 | `stopping` | `stopped` | Provider confirms stop, or the existing stop ladder ends | Existing ladder |
@@ -317,10 +317,19 @@ its own; the command's live native execution decides it. An accepted UI turn alo
 A session blocked only on questions or permissions does not need compute. Pending requests
 are tracked separately; answering one does not clear another, and an independent runnable
 tool still counts. A parent waiting on a blocked child can sleep, while another working
-session or descendant retains compute. After 10 minutes without activity the Sandbox DO
-stops the sandbox. Active heartbeats renew the provider lease (`ensureLeaseAtLeast`);
-inactive heartbeats still prove wrapper liveness. Native supervision does not schedule
-future wakeups after compute has stopped.
+session or descendant retains compute. Once a connected sandbox has had no activity for
+1 minute, the next inactive heartbeat stops it if all routes are unattended. A sandbox
+with at least one interactive origin (`cloud-agent-web`), a route still preparing,
+no routes, or an unreadable stored origin keeps the 10-minute idle window. Unrecognized
+or missing origins are unattended. The Sandbox DO derives this policy from its routes
+without a cache.
+
+The 1-minute rule is checked only on an inactive heartbeat, never on a disconnect or
+reconnect. The existing allocation idle backstop (10 min), heartbeat deadline (45 s),
+reconnect window (90 s), and provider lease (11 min) are unchanged. Active heartbeats
+renew that provider lease (`ensureLeaseAtLeast`); inactive heartbeats still prove wrapper
+liveness. A reconnect does not manufacture activity or extend the existing idle clock.
+Native supervision does not schedule future wakeups after compute has stopped.
 
 ### Billing, credentials and deletion
 
