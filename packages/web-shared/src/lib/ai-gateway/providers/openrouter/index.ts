@@ -145,7 +145,7 @@ async function enhancedModelList(models: OpenRouterModel[]) {
           !unavailableModelIds.has(model.id) &&
           !model.id.endsWith(':batch')
       )
-      .map(model => {
+      .map((model): OpenRouterModel => {
         const preferredProvider = getPreferredProviderOrder(model.id).at(0);
         const endpoints = endpointsMetadata[model.id]?.endpoints ?? [];
         const rawPricing = !preferredProvider
@@ -158,10 +158,14 @@ async function enhancedModelList(models: OpenRouterModel[]) {
             )?.pricing);
         const pricing = getModelDisplayPricing(rawPricing);
         const terminalBench = terminalBenchFor(summaries, model.id);
+        const aliasTarget = model.id.startsWith('~')
+          ? endpointsMetadata[model.id]?.alias_target?.slug
+          : undefined;
         return {
           ...model,
           ...(pricing && { pricing }),
           ...(terminalBench && { terminalBench }),
+          alias_target: aliasTarget,
         };
       })
       .concat(
