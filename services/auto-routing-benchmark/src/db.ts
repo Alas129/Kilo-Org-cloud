@@ -372,7 +372,8 @@ export async function getRunWithModels(
 }
 
 export async function upsertCaseResult(db: D1Database, row: CaseResultRow): Promise<void> {
-  await drizzle(db)
+  const orm = drizzle(db);
+  const upsert = orm
     .insert(caseResults)
     .values(row)
     .onConflictDoUpdate({
@@ -400,6 +401,121 @@ export async function upsertCaseResult(db: D1Database, row: CaseResultRow): Prom
         timed_out: row.timed_out,
       },
     });
+  await orm.batch([
+    upsert,
+    orm.delete(pendingDeciderOutputs).where(pendingDeciderOutputPredicate(row)),
+  ]);
+}
+
+export async function reuseDeciderCaseResults(
+  db: D1Database,
+  params: {
+    runId: string;
+    router: AutoRouter;
+    engineIdentity: string;
+    repetitions: number;
+    entries: readonly BenchmarkPair[];
+  }
+): Promise<number> {
+  let copied = 0;
+  for (let offset = 0; offset < params.entries.length; offset += 10) {
+    const statements: D1PreparedStatement[] = [];
+    for (const entry of params.entries.slice(offset, offset + 10)) {
+      if (entry.model.startsWith('~')) continue;
+      const bindings = [
+        params.router,
+        params.engineIdentity,
+        params.repetitions,
+        entry.model,
+        variantToStorage(entry.variant),
+        params.runId,
+      ];
+      statements.push(
+        db
+          .prepare(`
+          WITH ranked AS (
+            SELECT source.*,
+              ROW_NUMBER() OVER (
+                PARTITION BY source.case_id, source.rep
+                ORDER BY run.started_at DESC, run.id DESC
+              ) AS reuse_rank
+            FROM case_results AS source
+            JOIN benchmark_runs AS run ON run.id = source.run_id
+            WHERE run.kind = 'decider' AND run.status IN ('completed', 'failed')
+              AND run.router = ? AND run.engine_identity = ? AND run.repetitions = ?
+              AND source.model = ? AND source.variant = ?
+              AND source.error IS NULL AND source.timed_out = 0 AND source.exit_code = 0
+          )
+          INSERT INTO case_results (
+            run_id, model, variant, case_id, route_key, score, latency_ms, cost_usd,
+            error, fallback_reason, route_hit, retried, exit_code, output_prefix,
+            event_count, last_event_types, rep, timed_out
+          )
+          SELECT ?, model, variant, case_id, route_key, score, latency_ms, cost_usd,
+            error, fallback_reason, route_hit, retried, exit_code, output_prefix,
+            event_count, last_event_types, rep, timed_out
+          FROM ranked WHERE reuse_rank = 1
+          ON CONFLICT (run_id, model, variant, case_id, rep) DO NOTHING
+        `)
+          .bind(...bindings),
+        db
+          .prepare(`
+          WITH ranked AS (
+            SELECT source.*,
+              ROW_NUMBER() OVER (
+                PARTITION BY source.case_id, source.rep
+                ORDER BY run.started_at DESC, run.id DESC
+              ) AS reuse_rank
+            FROM pending_decider_outputs AS source
+            JOIN benchmark_runs AS run ON run.id = source.run_id
+            WHERE run.kind = 'decider' AND run.status IN ('completed', 'failed')
+              AND run.router = ? AND run.engine_identity = ? AND run.repetitions = ?
+              AND source.model = ? AND source.variant = ?
+              AND CASE WHEN json_valid(source.payload) THEN
+                json_type(source.payload, '$.result.exitCode') = 'integer'
+                AND json_extract(source.payload, '$.result.exitCode') = 0
+                AND json_type(source.payload, '$.result.timedOut') = 'false'
+              ELSE 0 END
+              AND NOT EXISTS (
+                SELECT 1 FROM case_results AS graded
+                WHERE graded.run_id = source.run_id AND graded.model = source.model
+                  AND graded.variant = source.variant AND graded.case_id = source.case_id
+                  AND graded.rep = source.rep
+              )
+          )
+          INSERT INTO pending_decider_outputs (run_id, model, variant, case_id, rep, payload)
+          SELECT ?, model, variant, case_id, rep, payload FROM ranked
+          WHERE reuse_rank = 1 AND NOT EXISTS (
+            SELECT 1 FROM case_results AS destination
+            WHERE destination.run_id = ? AND destination.model = ranked.model
+              AND destination.variant = ranked.variant AND destination.case_id = ranked.case_id
+              AND destination.rep = ranked.rep
+          )
+          ON CONFLICT (run_id, model, variant, case_id, rep) DO NOTHING
+        `)
+          .bind(...bindings, params.runId),
+        db
+          .prepare(`
+            DELETE FROM pending_decider_outputs
+            WHERE model = ? AND variant = ? AND EXISTS (
+              SELECT 1 FROM case_results AS graded
+              WHERE graded.run_id = pending_decider_outputs.run_id
+                AND graded.model = pending_decider_outputs.model
+                AND graded.variant = pending_decider_outputs.variant
+                AND graded.case_id = pending_decider_outputs.case_id
+                AND graded.rep = pending_decider_outputs.rep
+            )
+          `)
+          .bind(entry.model, variantToStorage(entry.variant))
+      );
+    }
+    if (statements.length === 0) continue;
+    const results = await db.batch(statements);
+    for (let index = 0; index < results.length; index += 3) {
+      copied += results[index].meta.changes ?? 0;
+    }
+  }
+  return copied;
 }
 
 export type LaneCaseCount = { model: string; variant: string; rep: number; n: number };
@@ -569,13 +685,6 @@ export async function savePendingDeciderOutput(
     .onConflictDoNothing();
 }
 
-export async function deletePendingDeciderOutputsForRun(
-  db: D1Database,
-  runId: string
-): Promise<void> {
-  await drizzle(db).delete(pendingDeciderOutputs).where(eq(pendingDeciderOutputs.run_id, runId));
-}
-
 export async function replaceModelSummaries(
   db: D1Database,
   runId: string,
@@ -739,7 +848,6 @@ export async function markRunCompleted(db: D1Database, runId: string): Promise<v
     .update(benchmarkRuns)
     .set({ status: 'completed', completed_at: new Date().toISOString() })
     .where(and(eq(benchmarkRuns.id, runId), eq(benchmarkRuns.status, 'running')));
-  await deletePendingDeciderOutputsForRun(db, runId);
 }
 
 export async function markStaleRunsFailed(db: D1Database, olderThanIso: string): Promise<void> {
@@ -747,17 +855,6 @@ export async function markStaleRunsFailed(db: D1Database, olderThanIso: string):
     .update(benchmarkRuns)
     .set({ status: 'failed', error: 'timed out' })
     .where(and(eq(benchmarkRuns.status, 'running'), lt(benchmarkRuns.started_at, olderThanIso)));
-  await drizzle(db)
-    .delete(pendingDeciderOutputs)
-    .where(
-      inArray(
-        pendingDeciderOutputs.run_id,
-        drizzle(db)
-          .select({ id: benchmarkRuns.id })
-          .from(benchmarkRuns)
-          .where(ne(benchmarkRuns.status, 'running'))
-      )
-    );
 }
 
 // The currently-running run of a (kind, purpose), if any (used for the
@@ -819,7 +916,6 @@ export async function markRunFailed(db: D1Database, runId: string, error: string
     .update(benchmarkRuns)
     .set({ status: 'failed', error: error.slice(0, 500), completed_at: new Date().toISOString() })
     .where(and(eq(benchmarkRuns.id, runId), eq(benchmarkRuns.status, 'running')));
-  await deletePendingDeciderOutputsForRun(db, runId);
 }
 
 function boundProfileFailureReason(reason: string): string {
