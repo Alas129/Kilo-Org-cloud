@@ -31,6 +31,14 @@ const OWNED = [
   [/^tools\/(i18n|nativewind)\//, 'apps/mobile'],
 ];
 
+// [pattern, workspace]: files whose change also affects a workspace, beyond
+// the workspace that owns the file.
+const EXTRA_INPUTS = [
+  // The ai-gateway build copies these web app files (the build-ai-gateway job
+  // in ci.yml).
+  [/^apps\/web\/\.env(\.test)?$/, 'apps/ai-gateway'],
+];
+
 // Root paths that no typecheck or lint reads.
 const NEUTRAL = [
   /\.md$/,
@@ -142,6 +150,9 @@ export function selectAffected({ items, changedFiles, lockfileDirs, references }
     const dir = owner(dirs, file);
     if (dir) {
       if (!file.endsWith('.md')) changed.add(dir);
+      for (const [pattern, reader] of EXTRA_INPUTS) {
+        if (pattern.test(file) && readers.has(reader)) changed.add(reader);
+      }
       continue;
     }
     if (GLOBAL.some(pattern => pattern.test(file))) {
