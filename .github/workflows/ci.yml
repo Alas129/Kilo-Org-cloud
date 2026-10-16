@@ -467,7 +467,7 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter '@kilocode/db...' --filter kilocode-monorepo
 
       - name: Drizzle check
         run: pnpm drizzle check
@@ -765,7 +765,7 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter 'ai-gateway-secure-proxy...' --filter kilocode-monorepo
 
       - name: Build ai-gateway-secure-proxy
         env:
@@ -933,6 +933,10 @@ jobs:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
 
+      # A full install: several workspace suites import other workspaces
+      # without declaring them (kiloclaw reaches kiloclaw-billing and
+      # event-service), and packages/harness-sdk documents that a filtered
+      # install breaks its ttsx transform.
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
