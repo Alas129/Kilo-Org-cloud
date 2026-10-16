@@ -30,7 +30,7 @@ for (const [file, name, command, condition] of [
     'pnpm --filter ${{ matrix.workspace.name }} test',
     "matrix.workspace.name == '@kilocode/harness-sdk'",
   ],
-  ...['typecheck', 'lint', 'i18n-leftover', 'check-unused', 'mobile-test'].map(name => [
+  ...['typecheck', 'lint', 'check-unused', 'mobile-test'].map(name => [
     'kilo-app-ci.yml',
     name,
     harnessBuild,
