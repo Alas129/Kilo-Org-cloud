@@ -1,5 +1,6 @@
 import {
   isVirtualAutoModelId,
+  type AutoRouter,
   type AutoRoutingDeniedModelsRequest,
 } from '@kilocode/auto-routing-contracts';
 import { getAutoRoutingSettings } from '@kilocode/web-shared/lib/ai-gateway/auto-routing-admin-client';
@@ -75,20 +76,24 @@ export async function loadEffectivePoolModelIds(owner: AutoRoutingOwner): Promis
   return null;
 }
 
-export async function loadAutoRoutingCandidateModelIds(owner: AutoRoutingOwner): Promise<string[]> {
+export async function loadAutoRoutingCandidateModelIds(
+  owner: AutoRoutingOwner,
+  router: AutoRouter
+): Promise<string[]> {
   const [table, poolModelIds] = await Promise.all([
-    getCachedRoutingTable(),
-    loadEffectivePoolModelIds(owner),
+    getCachedRoutingTable(router),
+    router === 'efficient' ? loadEffectivePoolModelIds(owner) : null,
   ]);
   return candidateModelIdsFromSources(table, poolModelIds);
 }
 
 export async function collectDeniedAutoRoutingModelIds(
   policy: EffectiveOrganizationModelPolicy,
-  owner: AutoRoutingOwner
+  owner: AutoRoutingOwner,
+  router: AutoRouter
 ): Promise<string[]> {
   if (!policyNeedsCandidateEvaluation(policy)) return [];
-  return deniedAutoRoutingCandidates(policy, await loadAutoRoutingCandidateModelIds(owner));
+  return deniedAutoRoutingCandidates(policy, await loadAutoRoutingCandidateModelIds(owner, router));
 }
 
 export async function deniedAutoRoutingCandidates(
@@ -122,11 +127,18 @@ function dataCollectionRequiredCandidates(
   );
 }
 
+export async function dataCollectionRequiredAutoRoutingCandidates(
+  candidateIds: ReadonlyArray<string>
+): Promise<string[]> {
+  return dataCollectionRequiredCandidates(candidateIds, await getDataCollectionRequiredModelIds());
+}
+
 export async function collectDataCollectionRequiredAutoRoutingModelIds(
-  owner: AutoRoutingOwner
+  owner: AutoRoutingOwner,
+  router: AutoRouter
 ): Promise<string[]> {
   const [candidateIds, dataCollectionRequiredModelIds] = await Promise.all([
-    loadAutoRoutingCandidateModelIds(owner),
+    loadAutoRoutingCandidateModelIds(owner, router),
     getDataCollectionRequiredModelIds(),
   ]);
   return dataCollectionRequiredCandidates(candidateIds, dataCollectionRequiredModelIds);
@@ -148,9 +160,7 @@ export async function deniedAutoRoutingModelIdsForMember(
     isDataCollectionExplicitlyDisallowed(
       getEffectiveProviderPrivacy(undefined, policy.dataCollection)
     )
-      ? getDataCollectionRequiredModelIds().then(requiredIds =>
-          dataCollectionRequiredCandidates(candidateIds, requiredIds)
-        )
+      ? dataCollectionRequiredAutoRoutingCandidates(candidateIds)
       : [],
   ]);
   return [...new Set([...deniedByPolicy, ...deniedByPrivacy])];
