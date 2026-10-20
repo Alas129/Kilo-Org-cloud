@@ -477,7 +477,7 @@ describe('SandboxSessionV2 Stop, answers and permissions', () => {
   });
 
   it('projects questions and permissions and resolves each through getPendingInteractions', async () => {
-    const { sessionId, stub } = await registerOnlySession();
+    const { stub } = await registerOnlySession();
     await stub.onEvents({
       events: [
         { type: 'question.asked', properties: { id: 'q_1' } },
